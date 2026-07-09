@@ -1,28 +1,59 @@
+const GLYPH_POOLS = [
+    ['⠁', '⠂', '⠃', '⠄', '⠅', '⠆', '⠇', '⠈', '⠉', '⠊', '⠋', '⠌', '⠍', '⠎', '⠏', '⠐'],
+    ['ア', 'イ', 'ウ', 'エ', 'オ', 'カ', 'キ', 'ク', 'ケ', 'コ', 'サ', 'シ', 'ス', 'セ', 'ソ', 'タ'],
+    ['अ', 'आ', 'इ', 'ई', 'उ', 'ऊ', 'ए', 'ऐ', 'ओ', 'क', 'ख', 'ग', 'च', 'ज', 'ट', 'ड'],
+    ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '月', '火', '水', '木', '金', '土'],
+    ['ༀ', '༁', '༂', '༃', '༄', '༅', '༆', '༇', '༈', '༉', '༊', '་', '༌', '།', '༎', '༏'],
+    ['※', '⁂', '⁑', '⁜', '◈', '◇', '◆', '◌', '◎', '◉', '◍', '◐', '◑', '◒', '◓', '◔']
+];
+
 const randomKey = () => Math.floor(Math.random() * 220) + 17;
+
+const shuffle = (items) => {
+    const out = [...items];
+    for (let i = out.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+};
+
+const pickAlphabet = () => {
+    const pool = GLYPH_POOLS[Math.floor(Math.random() * GLYPH_POOLS.length)];
+    return shuffle(pool).slice(0, 16);
+};
 
 const luaDecimalString = (value) => `"${[...value].map(char => `\\${char.charCodeAt(0)}`).join('')}"`;
 
-const luaByteString = (bytes) => `"${bytes.map(byte => `\\${String(byte).padStart(3, '0')}`).join('')}"`;
+const luaUtf8String = (value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
-const encodePayloadBytes = (source, key) => {
+const encodePayloadGlyphs = (source, key, alphabet) => {
     const bytes = Buffer.from(source, 'utf8');
-    const encoded = new Array(bytes.length);
+    let encoded = '';
     for (let i = 0; i < bytes.length; i++) {
-        encoded[i] = (bytes[i] + key + (i % 251)) % 256;
+        const mixed = (bytes[i] + key + ((i * 7) % 251) + (i % 13)) % 256;
+        encoded += alphabet[(mixed >> 4) & 15] + alphabet[mixed & 15];
     }
     return encoded;
 };
 
+const createMapLiteral = (alphabet) => {
+    return `{${alphabet.map((glyph, index) => `[${luaUtf8String(glyph)}]=${index}`).join(',')}}`;
+};
+
+const createDecoyAlphabet = () => luaUtf8String(shuffle(GLYPH_POOLS.flat()).slice(0, 32).join(''));
+
 const createVmBundle = (source) => {
     const key = randomKey();
-    const payload = luaByteString(encodePayloadBytes(source, key));
-    const alphabetSalt = '"⠁⠂⠃⠄⠅⠆⠇⠈アイウエ一二三四"';
+    const alphabet = pickAlphabet();
+    const payload = luaUtf8String(encodePayloadGlyphs(source, key, alphabet));
+    const map = createMapLiteral(alphabet);
     const k = {
         string: luaDecimalString('string'),
         table: luaDecimalString('table'),
-        byte: luaDecimalString('byte'),
         char: luaDecimalString('char'),
         concat: luaDecimalString('concat'),
+        gmatch: luaDecimalString('gmatch'),
         loadstring: luaDecimalString('loadstring'),
         debug: luaDecimalString('debug'),
         info: luaDecimalString('info'),
@@ -32,31 +63,59 @@ const createVmBundle = (source) => {
         tableType: luaDecimalString('table'),
         functionType: luaDecimalString('function'),
         sourceKind: luaDecimalString('s'),
+        utf8Pattern: luaDecimalString('([%z\\1-\\127\\194-\\244][\\128-\\191]*)'),
         loadstringError: luaDecimalString('SukaRed VM requires loadstring')
+    };
+
+    const v = {
+        env: '_ENV' + Math.floor(Math.random() * 9999),
+        str: '_S' + Math.floor(Math.random() * 9999),
+        tab: '_T' + Math.floor(Math.random() * 9999),
+        typ: '_Y' + Math.floor(Math.random() * 9999),
+        pc: '_P' + Math.floor(Math.random() * 9999),
+        err: '_R' + Math.floor(Math.random() * 9999),
+        dbg: '_D' + Math.floor(Math.random() * 9999),
+        map: '_M' + Math.floor(Math.random() * 9999),
+        pay: '_Q' + Math.floor(Math.random() * 9999),
+        out: '_O' + Math.floor(Math.random() * 9999),
+        hi: '_H' + Math.floor(Math.random() * 9999),
+        idx: '_I' + Math.floor(Math.random() * 9999),
+        ch: '_C' + Math.floor(Math.random() * 9999),
+        val: '_V' + Math.floor(Math.random() * 9999),
+        src: '_X' + Math.floor(Math.random() * 9999),
+        load: '_L' + Math.floor(Math.random() * 9999),
+        fn: '_F' + Math.floor(Math.random() * 9999),
+        le: '_E' + Math.floor(Math.random() * 9999),
+        ok: '_K' + Math.floor(Math.random() * 9999),
+        re: '_N' + Math.floor(Math.random() * 9999),
+        salt: '_Z' + Math.floor(Math.random() * 9999)
     };
 
     const parts = [
         '(function()',
-        'local _E=getfenv()',
-        `local _S=_E[${k.string}]`,
-        `local _T=_E[${k.table}]`,
-        `local _TY=_E[${k.type}]`,
-        `local _PC=_E[${k.pcall}]`,
-        `local _ER=_E[${k.error}]`,
-        `local _D=_E[${k.debug}]`,
-        `local _A=${alphabetSalt}`,
-        `if(not _S)or(not _T)or(_TY and _TY(_S)~=${k.tableType})then while true do end end`,
-        `if _D and _D[${k.info}]then local _ok=_PC(function()return _D[${k.info}](_D[${k.info}],${k.sourceKind})end)if not _ok then while true do end end end`,
-        `local _P=${payload}`,
-        'local _R={}',
-        `for _I=1,#_P do _R[_I]=_S[${k.char}]((_S[${k.byte}](_P,_I)-${key}-((_I-1)%251))%256)end`,
-        `local _SRC=_T[${k.concat}](_R)`,
-        `local _L=_E[${k.loadstring}]`,
-        `if(not _L)or(_TY and _TY(_L)~=${k.functionType})then if _ER then _ER(${k.loadstringError})else while true do end end end`,
-        'local _FN,_LE=_L(_SRC)',
-        'if not _FN then if _ER then _ER(_LE)else while true do end end end',
-        'local _OK,_RE=_PC(_FN)',
-        'if not _OK then if _ER then _ER(_RE)else while true do end end end',
+        `local ${v.env}=getfenv()`,
+        `local ${v.str}=${v.env}[${k.string}]`,
+        `local ${v.tab}=${v.env}[${k.table}]`,
+        `local ${v.typ}=${v.env}[${k.type}]`,
+        `local ${v.pc}=${v.env}[${k.pcall}]`,
+        `local ${v.err}=${v.env}[${k.error}]`,
+        `local ${v.dbg}=${v.env}[${k.debug}]`,
+        `local ${v.salt}=${createDecoyAlphabet()}`,
+        `if(not ${v.str})or(not ${v.tab})or(${v.typ} and ${v.typ}(${v.str})~=${k.tableType})then while true do end end`,
+        `if ${v.dbg} and ${v.dbg}[${k.info}]then local _ok=${v.pc}(function()return ${v.dbg}[${k.info}](${v.dbg}[${k.info}],${k.sourceKind})end)if not _ok then while true do end end end`,
+        `local ${v.map}=${map}`,
+        `local ${v.pay}=${payload}`,
+        `local ${v.out}={}`,
+        `local ${v.hi}=nil`,
+        `local ${v.idx}=1`,
+        `for ${v.ch} in ${v.str}[${k.gmatch}](${v.pay},${k.utf8Pattern})do local ${v.val}=${v.map}[${v.ch}] if ${v.val}~=nil then if ${v.hi}==nil then ${v.hi}=${v.val} else local _B=${v.hi}*16+${v.val} ${v.out}[${v.idx}]=${v.str}[${k.char}]((_B-${key}-(((${v.idx}-1)*7)%251)-(((${v.idx}-1)%13)))%256) ${v.idx}=${v.idx}+1 ${v.hi}=nil end end end`,
+        `local ${v.src}=${v.tab}[${k.concat}](${v.out})`,
+        `local ${v.load}=${v.env}[${k.loadstring}]`,
+        `if(not ${v.load})or(${v.typ} and ${v.typ}(${v.load})~=${k.functionType})then if ${v.err} then ${v.err}(${k.loadstringError})else while true do end end end`,
+        `local ${v.fn},${v.le}=${v.load}(${v.src})`,
+        `if not ${v.fn} then if ${v.err} then ${v.err}(${v.le})else while true do end end end`,
+        `local ${v.ok},${v.re}=${v.pc}(${v.fn})`,
+        `if not ${v.ok} then if ${v.err} then ${v.err}(${v.re})else while true do end end end`,
         'end)()'
     ];
 
