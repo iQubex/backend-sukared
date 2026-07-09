@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const luaparse = require('luaparse');
 
-const app = express();
+const app = Web = express();
 
 app.use(cors());
 app.use(express.json());
@@ -82,7 +82,7 @@ end
     }
 };
 
-const insertOpaquePredicates = (code) => {
+const insertOpaquePredicates = (code, state) => {
     const lines = code.split('\n');
     const result = [];
     for (let i = 0; i < lines.length; i++) {
@@ -98,7 +98,7 @@ const insertOpaquePredicates = (code) => {
                                     line.endsWith('elseif');
 
         if (line.length > 0 && !endsWithContinuation && Math.random() < 0.25) {
-            result.push(generateOpaquePredicate());
+            result.push(transformLuaSnippet(generateOpaquePredicate(), state));
         }
     }
     return result.join('\n');
@@ -131,6 +131,28 @@ const getStringValue = (raw) => {
     });
 };
 
+const createDecryptCall = (name, key = Math.floor(Math.random() * 254) + 1) => ({
+    type: 'CallExpression',
+    base: {
+        type: 'Identifier',
+        name: 'lIIll_10O_l'
+    },
+    arguments: [
+        {
+            type: 'StringLiteral',
+            value: null,
+            raw: `"${encodeStringToUnicode(name, key)}"`
+        },
+        {
+            type: 'NumericLiteral',
+            value: key,
+            raw: String(key)
+        }
+    ]
+});
+
+const luaEscapedStringLiteral = (value) => `"${[...value].map(char => `\\${char.charCodeAt(0)}`).join('')}"`;
+
 // Scope / Kapsam Çözümleyici Sınıfı
 class Scope {
     constructor(parent = null) {
@@ -151,33 +173,39 @@ class Scope {
     }
 }
 
-// 4. StringLiteral ve Identifier AST Düğümleri Manipülasyonu
+const createRuntimeScope = () => {
+    const scope = new Scope();
+    scope.define('lIIll_10O_l', 'lIIll_10O_l');
+    scope.define('lO_10O_lI', 'lO_10O_lI');
+    return scope;
+};
+
+// 4. StringLiteral, MemberExpression, TableKey ve Identifier Düğümleri Manipülasyonu
 const encryptStringNode = (node, state) => {
     const rawVal = node.raw;
     const strVal = getStringValue(rawVal);
     if (strVal.length === 0) return;
 
     state.hasStrings = true;
-    const key = Math.floor(Math.random() * 254) + 1;
-    const encodedStr = encodeStringToUnicode(strVal, key);
-
     node.type = 'CallExpression';
+    const decryptCall = createDecryptCall(strVal);
+    node.base = decryptCall.base;
+    node.arguments = decryptCall.arguments;
+};
+
+const transformToGetfenvLookup = (node, name, state) => {
+    state.hasStrings = true;
+
+    node.type = 'IndexExpression';
     node.base = {
-        type: 'Identifier',
-        name: 'lIIll_10O_l' // Obfuscated _DECRYPT ismi
-    };
-    node.arguments = [
-        {
-            type: 'StringLiteral',
-            value: null,
-            raw: `"${encodedStr}"`
+        type: 'CallExpression',
+        base: {
+            type: 'Identifier',
+            name: 'getfenv'
         },
-        {
-            type: 'NumericLiteral',
-            value: key,
-            raw: String(key)
-        }
-    ];
+        arguments: []
+    };
+    node.index = createDecryptCall(name);
 };
 
 const walk = (node, scope, state) => {
@@ -269,6 +297,7 @@ const walk = (node, scope, state) => {
                 scope.define(node.identifier.name, newName);
                 node.identifier.name = newName;
             } else {
+                node.implicitSelf = node.identifier.type === 'MemberExpression' && node.identifier.indexer === ':';
                 walk(node.identifier, scope, state);
             }
             
@@ -284,12 +313,15 @@ const walk = (node, scope, state) => {
             node.body.forEach(stmt => walk(stmt, funcScope, state));
             break;
 
-        case 'Identifier':
+        case 'Identifier': {
             const resolved = scope.lookup(node.name);
             if (resolved !== null) {
                 node.name = resolved;
+            } else if (node.name !== 'getfenv' && node.name !== 'lIIll_10O_l' && node.name !== 'lO_10O_lI') {
+                transformToGetfenvLookup(node, node.name, state);
             }
             break;
+        }
 
         case 'StringLiteral':
             encryptStringNode(node, state);
@@ -310,9 +342,17 @@ const walk = (node, scope, state) => {
             walk(node.value, scope, state);
             break;
 
-        case 'TableKeyString':
+        case 'TableKeyString': {
             walk(node.value, scope, state);
+            
+            // Tablo anahtarlarını da şifrele (TableKeyString -> TableKey)
+            const keyName = node.key.name;
+            state.hasStrings = true;
+            
+            node.type = 'TableKey';
+            node.key = createDecryptCall(keyName);
             break;
+        }
 
         case 'TableValue':
             walk(node.value, scope, state);
@@ -328,9 +368,17 @@ const walk = (node, scope, state) => {
             walk(node.argument, scope, state);
             break;
 
-        case 'MemberExpression':
+        case 'MemberExpression': {
             walk(node.base, scope, state);
+            
+            // Özellik/metot isimlerini şifreleyerek IndexExpression'a dönüştür
+            const propName = node.identifier.name;
+            state.hasStrings = true;
+            
+            node.type = 'IndexExpression';
+            node.index = createDecryptCall(propName);
             break;
+        }
 
         case 'IndexExpression':
             walk(node.base, scope, state);
@@ -338,8 +386,31 @@ const walk = (node, scope, state) => {
             break;
 
         case 'CallExpression':
-            walk(node.base, scope, state);
-            node.arguments.forEach(arg => walk(arg, scope, state));
+            if (node.base.type === 'MemberExpression' && node.base.indexer === ':') {
+                const methodObj = node.base.base;
+                const methodName = node.base.identifier.name;
+
+                // 1. Nesneyi gez
+                walk(methodObj, scope, state);
+                // 2. Orijinal parametreleri gez (çift gezilmesini engellemek için)
+                node.arguments.forEach(arg => walk(arg, scope, state));
+
+                // 3. Gezilmiş nesneyi kopyalayıp parametrelerin en başına (self) ekle
+                const selfArg = JSON.parse(JSON.stringify(methodObj));
+                node.arguments.unshift(selfArg);
+
+                // 4. Metot ismini şifrele ve taban çağrıyı IndexExpression yap
+                state.hasStrings = true;
+
+                node.base = {
+                    type: 'IndexExpression',
+                    base: methodObj,
+                    index: createDecryptCall(methodName)
+                };
+            } else {
+                walk(node.base, scope, state);
+                node.arguments.forEach(arg => walk(arg, scope, state));
+            }
             break;
 
         case 'TableCallExpression':
@@ -354,7 +425,7 @@ const walk = (node, scope, state) => {
     }
 };
 
-// 5. AST'den Lua Koduna (String) Geri Dönüşüm Jeneratörü
+// 5. AST'den Lua Koduna (String) Geri Dönüşüm Jeneratörü (Düzeltilmiş Boşluk Kuralları ile)
 const astToCode = (node) => {
     if (!node) return '';
 
@@ -421,9 +492,12 @@ const astToCode = (node) => {
             return 'break';
 
         case 'FunctionDeclaration': {
-            const params = node.parameters.map(astToCode).join(',');
-            const localStr = node.isLocal ? 'local ' : '';
-            return `${localStr}function ${astToCode(node.identifier)}(${params}) ${node.body.map(astToCode).join(' ')} end`;
+            const params = node.parameters.map(astToCode);
+            if (node.isLocal) {
+                return `local function ${astToCode(node.identifier)}(${params.join(',')}) ${node.body.map(astToCode).join(' ')} end`;
+            }
+            const fnParams = node.implicitSelf ? ['self', ...params] : params;
+            return `${astToCode(node.identifier)}=function(${fnParams.join(',')}) ${node.body.map(astToCode).join(' ')} end`;
         }
 
         case 'Identifier':
@@ -457,11 +531,18 @@ const astToCode = (node) => {
             return astToCode(node.value);
 
         case 'BinaryExpression':
-        case 'LogicalExpression':
+            if (/^(and|or)$/.test(node.operator)) {
+                return `(${astToCode(node.left)} ${node.operator} ${astToCode(node.right)})`;
+            }
             return `(${astToCode(node.left)}${node.operator}${astToCode(node.right)})`;
 
+        case 'LogicalExpression':
+            // Mantıksal operatörlerin (and, or) etrafında boşluk bırakılmasını sağla
+            return `(${astToCode(node.left)} ${node.operator} ${astToCode(node.right)})`;
+
         case 'UnaryExpression':
-            return `(${node.operator}${astToCode(node.argument)})`;
+            // "not" operatörünün etrafında boşluk bırakılmasını sağla
+            return `(${node.operator === 'not' ? 'not ' : node.operator}${astToCode(node.argument)})`;
 
         case 'MemberExpression':
             return `${astToCode(node.base)}${node.indexer}${astToCode(node.identifier)}`;
@@ -483,6 +564,22 @@ const astToCode = (node) => {
     }
 };
 
+const transformLuaSnippet = (code, state) => {
+    const ast = luaparse.parse(code, { comments: false });
+    walk(ast, createRuntimeScope(), state);
+    return astToCode(ast);
+};
+
+const createDecryptRuntime = () => {
+    const stringLookup = luaEscapedStringLiteral('string');
+    const tableLookup = luaEscapedStringLiteral('table');
+    const gmatchLookup = luaEscapedStringLiteral('gmatch');
+    const insertLookup = luaEscapedStringLiteral('insert');
+    const charLookup = luaEscapedStringLiteral('char');
+
+    return `local function lIIll_10O_l(s,k)local lS=getfenv()[${stringLookup}]local lT=getfenv()[${tableLookup}]local lI_m={["⠁"]=0,["⠂"]=1,["⠃"]=2,["⠄"]=3,["⠅"]=4,["⠆"]=5,["⠇"]=6,["⠈"]=7,["ア"]=8,["イ"]=9,["ウ"]=10,["エ"]=11,["一"]=12,["二"]=13,["三"]=14,["四"]=15}local lI_b={}local lI_t=nil for lI_c in lS[${gmatchLookup}](s,"([%z\\1-\\127\\194-\\244][\\128-\\191]*)")do local lI_v=lI_m[lI_c]if lI_v then if not lI_t then lI_t=lI_v else lT[${insertLookup}](lI_b,lI_t*16+lI_v)lI_t=nil end end end local lI_r=""for lI_i=1,#lI_b do lI_r=lI_r..lS[${charLookup}]((lI_b[lI_i]-k)%256)end return lI_r end `;
+};
+
 const minifyLuau = (code) => {
     return code.replace(/\s+/g, ' ').trim();
 };
@@ -500,41 +597,31 @@ app.post('/obfuscate', (req, res) => {
         // 1. Aşama: Lua AST Parsing
         const ast = luaparse.parse(cleanedCode, { comments: false });
 
-        // Global scope'u oluştur
-        const globalScope = new Scope();
-        const keywords = [
-            'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function',
-            'if', 'in', 'local', 'nil', 'not', 'or', 'repeat', 'return', 'then',
-            'true', 'until', 'while', 'math', 'string', 'table', 'print', 'pairs',
-            'ipairs', 'tostring', 'tonumber', 'next', 'select', 'warn', 'error',
-            'workspace', 'game', 'script', 'Instance', 'Vector3', 'Color3', 'CFrame',
-            's', 'k', 't', 'b', 'c', 'v', 'r', 'i', 'm', 'lIIll_10O_l', 'lO_10O_lI'
-        ];
-        keywords.forEach(k => globalScope.define(k, k));
+        // Global scope oluştur (decrypt ve anti-tamper fonksiyon adlarını koru)
+        const globalScope = createRuntimeScope();
 
-        // State nesnesi (string şifrelenip şifrelenmediğini izler)
+        // State nesnesi
         const state = { hasStrings: false };
 
-        // 2. Aşama: AST Gezme, String Şifreleme ve Değişken İsim Bozma
+        // 2. Aşama: AST Gezme, getfenv Dönüşümü, Member Hiding ve Değişken İsim Bozma
         walk(ast, globalScope, state);
 
         // 3. Aşama: AST'den Lua Koduna Geri Dönüş
         let obfCode = astToCode(ast);
 
-        // 4. Aşama: Şifre Çözücü Enjeksiyonu (sadece string varsa)
+        // 4. Aşama: Anti-Tamper Header Enjeksiyonu
+        const antiTamper = `local function lO_10O_lI() if not debug or type(debug) ~= "table" or not debug.info then while true do end end if debug.info(debug.info, "s") ~= "[C]" then while true do end end local function lI_dummy() end if debug.info(lI_dummy, "s") == "[C]" then while true do end end local lI_list = {string.char, pcall, xpcall, unpack, setmetatable} if getfenv then table.insert(lI_list, getfenv) end for lI_i = 1, #lI_list do if type(lI_list[lI_i]) ~= "function" or debug.info(lI_list[lI_i], "s") ~= "[C]" then while true do end end end end lO_10O_lI() `;
+        obfCode = transformLuaSnippet(antiTamper, state) + obfCode;
+
+        // 5. Aşama: Opaque Predicates (Kör Düğümler) Ekleme
+        obfCode = insertOpaquePredicates(obfCode, state);
+
+        // 6. Aşama: Şifre Çözücü Enjeksiyonu
         if (state.hasStrings) {
-            const decryptFn = `local function lIIll_10O_l(s,k)local lI_m={["⠁"]=0,["⠂"]=1,["⠃"]=2,["⠄"]=3,["⠅"]=4,["⠆"]=5,["⠇"]=6,["⠈"]=7,["ア"]=8,["イ"]=9,["ウ"]=10,["エ"]=11,["一"]=12,["二"]=13,["三"]=14,["四"]=15}local lI_b={}local lI_t=nil for lI_c in string.gmatch(s,"([%z\\1-\\127\\194-\\244][\\128-\\191]*)")do local lI_v=lI_m[lI_c]if lI_v then if not lI_t then lI_t=lI_v else table.insert(lI_b,lI_t*16+lI_v)lI_t=nil end end end local lI_r=""for lI_i=1,#lI_b do lI_r=lI_r..string.char((lI_b[lI_i]-k)%256)end return lI_r end `;
-            obfCode = decryptFn + obfCode;
+            obfCode = createDecryptRuntime() + obfCode;
         }
 
-        // 5. Aşama: Anti-Tamper Header Enjeksiyonu
-        const antiTamper = `local function lO_10O_lI() if not debug or type(debug) ~= "table" or not debug.info then while true do end end if debug.info(debug.info, "s") ~= "[C]" then while true do end end local function lI_dummy() end if debug.info(lI_dummy, "s") == "[C]" then while true do end end local lI_list = {string.char, pcall, xpcall, unpack, setmetatable} if getfenv then table.insert(lI_list, getfenv) end for lI_i = 1, #lI_list do if type(lI_list[lI_i]) ~= "function" or debug.info(lI_list[lI_i], "s") ~= "[C]" then while true do end end end end lO_10O_lI() `;
-        obfCode = antiTamper + obfCode;
-
-        // 6. Aşama: Opaque Predicates (Kör Düğümler) Ekleme
-        obfCode = insertOpaquePredicates(obfCode);
-
-        // 7. Aşama: Minification (Düzen Gözetmeksizin Tek Satır)
+        // 7. Aşama: Minification
         obfCode = minifyLuau(obfCode);
 
         res.json({
