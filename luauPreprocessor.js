@@ -339,6 +339,137 @@ const convertCompoundAssignments = (code) => {
     });
 };
 
+const findTopLevelKeyword = (code, keyword, start = 0) => {
+    let paren = 0;
+    let curly = 0;
+    let square = 0;
+    for (let i = start; i < code.length;) {
+        const char = code[i];
+        if (char === '"' || char === "'") {
+            i = readQuoted(code, i);
+            continue;
+        }
+        if (char === '`') {
+            i = readBacktick(code, i);
+            continue;
+        }
+        if (char === '[' && /^\[=*\[/.test(code.slice(i))) {
+            i = readLongBracket(code, i);
+            continue;
+        }
+        if (char === '(') paren++;
+        else if (char === ')' && paren > 0) {
+            paren--;
+            i++;
+            continue;
+        }
+        else if (char === '{') curly++;
+        else if (char === '}' && curly > 0) curly--;
+        else if (char === '[') square++;
+        else if (char === ']' && square > 0) {
+            square--;
+            i++;
+            continue;
+        }
+
+        if (paren === 0 && curly === 0 && square === 0 && code.startsWith(keyword, i)) {
+            const before = code[i - 1];
+            const after = code[i + keyword.length];
+            if (!isIdentPart(before) && !isIdentPart(after)) return i;
+        }
+        i++;
+    }
+    return -1;
+};
+
+const findExpressionEnd = (code, start) => {
+    let paren = 0;
+    let curly = 0;
+    let square = 0;
+    for (let i = start; i < code.length;) {
+        const char = code[i];
+        if (char === '"' || char === "'") {
+            i = readQuoted(code, i);
+            continue;
+        }
+        if (char === '`') {
+            i = readBacktick(code, i);
+            continue;
+        }
+        if (char === '[' && /^\[=*\[/.test(code.slice(i))) {
+            i = readLongBracket(code, i);
+            continue;
+        }
+        if (char === '(') paren++;
+        else if (char === ')' && paren > 0) {
+            paren--;
+            i++;
+            continue;
+        }
+        else if (char === '{') curly++;
+        else if (char === '}' && curly > 0) curly--;
+        else if (char === '[') square++;
+        else if (char === ']' && square > 0) {
+            square--;
+            i++;
+            continue;
+        }
+        if (paren === 0 && curly === 0 && square === 0 && (char === '\n' || char === ';' || char === ',' || char === ')')) {
+            return i;
+        }
+        i++;
+    }
+    return code.length;
+};
+
+const convertLuauIfExpressions = (code) => {
+    let out = '';
+    for (let i = 0; i < code.length;) {
+        const char = code[i];
+        if (char === '"' || char === "'") {
+            const end = readQuoted(code, i);
+            out += code.slice(i, end);
+            i = end;
+            continue;
+        }
+        if (char === '`') {
+            const end = readBacktick(code, i);
+            out += code.slice(i, end);
+            i = end;
+            continue;
+        }
+        if (char === '[' && /^\[=*\[/.test(code.slice(i))) {
+            const end = readLongBracket(code, i);
+            out += code.slice(i, end);
+            i = end;
+            continue;
+        }
+        if (code.startsWith('if', i) && !isIdentPart(code[i - 1]) && !isIdentPart(code[i + 2])) {
+            const prev = out.trimEnd().slice(-1);
+            if (!prev || !/[=({[,]/.test(prev)) {
+                out += code[i++];
+                continue;
+            }
+            const thenIndex = findTopLevelKeyword(code, 'then', i + 2);
+            if (thenIndex !== -1) {
+                const elseIndex = findTopLevelKeyword(code, 'else', thenIndex + 4);
+                if (elseIndex !== -1) {
+                    const end = findExpressionEnd(code, elseIndex + 4);
+                    const condition = code.slice(i + 2, thenIndex).trim();
+                    const truthy = code.slice(thenIndex + 4, elseIndex).trim();
+                    const falsy = code.slice(elseIndex + 4, end).trim();
+                    out += `(function() if ${condition} then return ${truthy} else return ${falsy} end end)()`;
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        out += char;
+        i++;
+    }
+    return out;
+};
+
 const normalizeLuauOperators = (code) => {
     return code
         .replace(/\bcontinue\b/g, 'break')
@@ -353,6 +484,7 @@ function preprocessLuau(code) {
     out = stripGenerics(out);
     out = stripTypesAndCasts(out);
     out = convertCompoundAssignments(out);
+    out = convertLuauIfExpressions(out);
     out = normalizeLuauOperators(out);
     return out;
 }

@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const luaparse = require('luaparse');
 const { preprocessLuau } = require('./luauPreprocessor');
+const { createVmBundle } = require('./vmEngine');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -854,7 +855,7 @@ const createAntiTamper = () => (
 
 const minifyLuau = (code) => code.replace(/\s+/g, ' ').trim();
 
-const obfuscateAsync = async (source) => {
+const obfuscateAstAsync = async (source) => {
     const cleaned = preprocessLuau(source);
     const ast = parseChunk(cleaned);
     const state = { hasStrings: false };
@@ -867,15 +868,33 @@ const obfuscateAsync = async (source) => {
     return minifyLuau(obfCode);
 };
 
+const obfuscateAsync = async (source, mode = 'auto') => {
+    if (mode === 'vm') {
+        return minifyLuau(createVmBundle(source));
+    }
+    if (mode === 'ast') {
+        return obfuscateAstAsync(source);
+    }
+    try {
+        return await obfuscateAstAsync(source);
+    } catch (err) {
+        const fallback = minifyLuau(createVmBundle(source));
+        fallback.__fallbackError = err;
+        return fallback;
+    }
+};
+
 app.post('/obfuscate', async (req, res) => {
     const code = req.body && req.body.code;
     if (!code) return res.status(400).send({ error: 'Kod gönder kanka!' });
 
     try {
-        const obfuscated = await obfuscateAsync(String(code));
+        const mode = req.body && req.body.mode ? String(req.body.mode).toLowerCase() : 'auto';
+        const obfuscated = await obfuscateAsync(String(code), mode);
         res.json({
             status: 'success',
             original_length: code.length,
+            mode: mode === 'vm' ? 'vm' : 'auto',
             obfuscated
         });
     } catch (err) {
