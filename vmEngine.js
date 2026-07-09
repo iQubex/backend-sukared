@@ -2,60 +2,65 @@ const randomKey = () => Math.floor(Math.random() * 220) + 17;
 
 const luaDecimalString = (value) => `"${[...value].map(char => `\\${char.charCodeAt(0)}`).join('')}"`;
 
-const encodeBytes = (source, key) => {
+const luaByteString = (bytes) => `"${bytes.map(byte => `\\${String(byte).padStart(3, '0')}`).join('')}"`;
+
+const encodePayloadBytes = (source, key) => {
     const bytes = Buffer.from(source, 'utf8');
-    const encoded = [];
-    for (const byte of bytes) {
-        encoded.push((byte + key) % 256);
+    const encoded = new Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) {
+        encoded[i] = (bytes[i] + key + (i % 251)) % 256;
     }
     return encoded;
 };
 
-const chunkArray = (values, size = 28) => {
-    const lines = [];
-    for (let i = 0; i < values.length; i += size) {
-        lines.push(values.slice(i, i + size).join(','));
-    }
-    return lines.join(',\n');
-};
-
 const createVmBundle = (source) => {
     const key = randomKey();
-    const payload = chunkArray(encodeBytes(source, key));
+    const payload = luaByteString(encodePayloadBytes(source, key));
+    const alphabetSalt = '"⠁⠂⠃⠄⠅⠆⠇⠈アイウエ一二三四"';
     const k = {
         string: luaDecimalString('string'),
         table: luaDecimalString('table'),
+        byte: luaDecimalString('byte'),
         char: luaDecimalString('char'),
         concat: luaDecimalString('concat'),
-        getfenv: luaDecimalString('getfenv'),
         loadstring: luaDecimalString('loadstring'),
         debug: luaDecimalString('debug'),
         info: luaDecimalString('info'),
         type: luaDecimalString('type'),
         pcall: luaDecimalString('pcall'),
-        error: luaDecimalString('error')
+        error: luaDecimalString('error'),
+        tableType: luaDecimalString('table'),
+        functionType: luaDecimalString('function'),
+        sourceKind: luaDecimalString('s'),
+        loadstringError: luaDecimalString('SukaRed VM requires loadstring')
     };
 
-    return [
-        'local __E=getfenv()',
-        `local __S=__E[${k.string}]`,
-        `local __T=__E[${k.table}]`,
-        `local __D=__E[${k.debug}]`,
-        `local __TY=__E[${k.type}]`,
-        `local __PC=__E[${k.pcall}]`,
-        `local __ERR=__E[${k.error}]`,
-        `if (not __S) or (not __T) or (__TY and __TY(__S)~=${luaDecimalString('table')}) then while true do end end`,
-        `if __D and __D[${k.info}] then local __ok=__PC(function() return __D[${k.info}](__D[${k.info}],${luaDecimalString('s')}) end) if not __ok then while true do end end end`,
-        `local __B={${payload}}`,
-        `local __R={}`,
-        `for __I=1,#__B do __R[__I]=__S[${k.char}]((__B[__I]-${key})%256) end`,
-        `local __SRC=__T[${k.concat}](__R)`,
-        `local __L=__E[${k.loadstring}]`,
-        `if not __L then if __ERR then __ERR(${luaDecimalString('SukaRed VM requires loadstring')}) else while true do end end end`,
-        `local __FN,__ER=__L(__SRC)`,
-        `if not __FN then if __ERR then __ERR(__ER) else while true do end end end`,
-        `return __FN()`
-    ].join('\n');
+    const parts = [
+        '(function()',
+        'local _E=getfenv()',
+        `local _S=_E[${k.string}]`,
+        `local _T=_E[${k.table}]`,
+        `local _TY=_E[${k.type}]`,
+        `local _PC=_E[${k.pcall}]`,
+        `local _ER=_E[${k.error}]`,
+        `local _D=_E[${k.debug}]`,
+        `local _A=${alphabetSalt}`,
+        `if(not _S)or(not _T)or(_TY and _TY(_S)~=${k.tableType})then while true do end end`,
+        `if _D and _D[${k.info}]then local _ok=_PC(function()return _D[${k.info}](_D[${k.info}],${k.sourceKind})end)if not _ok then while true do end end end`,
+        `local _P=${payload}`,
+        'local _R={}',
+        `for _I=1,#_P do _R[_I]=_S[${k.char}]((_S[${k.byte}](_P,_I)-${key}-((_I-1)%251))%256)end`,
+        `local _SRC=_T[${k.concat}](_R)`,
+        `local _L=_E[${k.loadstring}]`,
+        `if(not _L)or(_TY and _TY(_L)~=${k.functionType})then if _ER then _ER(${k.loadstringError})else while true do end end end`,
+        'local _FN,_LE=_L(_SRC)',
+        'if not _FN then if _ER then _ER(_LE)else while true do end end end',
+        'local _OK,_RE=_PC(_FN)',
+        'if not _OK then if _ER then _ER(_RE)else while true do end end end',
+        'end)()'
+    ];
+
+    return parts.join(';').replace('(function();', '(function() ').replace(/then;/g, 'then ');
 };
 
 module.exports = {

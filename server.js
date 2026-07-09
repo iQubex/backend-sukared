@@ -889,11 +889,18 @@ const obfuscateAstAsync = async (source) => {
 };
 
 const obfuscateAsync = async (source, mode = 'auto') => {
-    if (mode === 'vm') {
+    if (mode === 'vm' || mode === 'auto') {
         return minifyLuau(createVmBundle(source));
     }
     if (mode === 'ast') {
         return obfuscateAstAsync(source);
+    }
+    if (mode === 'hybrid') {
+        try {
+            return await obfuscateAstAsync(source);
+        } catch (err) {
+            return minifyLuau(createVmBundle(source));
+        }
     }
     try {
         return await obfuscateAstAsync(source);
@@ -914,7 +921,7 @@ app.post('/obfuscate', async (req, res) => {
         res.json({
             status: 'success',
             original_length: code.length,
-            mode: mode === 'vm' ? 'vm' : 'auto',
+            mode: mode === 'ast' || mode === 'hybrid' ? mode : 'vm',
             obfuscated
         });
     } catch (err) {
