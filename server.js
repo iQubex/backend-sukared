@@ -246,6 +246,7 @@ const convertAllInterpolatedStrings = (code) => {
 
 const removeLuauTypes = (code) => {
     code = code.replace(/\)\s*:\s*[^=\n;]*?\s+(?=(return|local|if|for|while|repeat|do|end)\b)/g, ') ');
+    code = code.replace(/:\s*\([^)\n]*\)\s*->\s*[^=,\n;)]+/g, '');
     let out = '';
     for (let i = 0; i < code.length;) {
         const char = code[i];
@@ -313,6 +314,106 @@ const removeLuauTypes = (code) => {
     return out.replace(/\b(export\s+)?type\s+[A-Za-z_][A-Za-z0-9_]*\s*=[^\n;]*/g, '');
 };
 
+const stripBalancedAngle = (code, index) => {
+    let depth = 1;
+    let i = index + 1;
+    while (i < code.length) {
+        const char = code[i];
+        if (char === '"' || char === "'") {
+            i = skipQuotedString(code, i, char);
+            continue;
+        }
+        if (char === '<') depth++;
+        if (char === '>') depth--;
+        i++;
+        if (depth === 0) return i;
+    }
+    return index;
+};
+
+const stripLuauGenerics = (code) => {
+    let out = '';
+    for (let i = 0; i < code.length;) {
+        const char = code[i];
+        if (char === '"' || char === "'") {
+            const end = skipQuotedString(code, i, char);
+            out += code.slice(i, end);
+            i = end;
+            continue;
+        }
+        if (char === '[' && /^(\[=*\[)/.test(code.slice(i))) {
+            const end = skipLongBracket(code, i);
+            out += code.slice(i, end);
+            i = end;
+            continue;
+        }
+        if (char === '<' && /[A-Za-z0-9_]\s*$/.test(out)) {
+            const end = stripBalancedAngle(code, i);
+            if (end > i) {
+                let look = end;
+                while (isSpace(code[look])) look++;
+                if (code[look] === '(' || code[look] === '.' || code[look] === ':') {
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        out += char;
+        i++;
+    }
+    return out;
+};
+
+const stripLuauCasts = (code) => {
+    code = code
+        .replace(/\s*::\s*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:<[^>\n]*>)?/g, '')
+        .replace(/\s*::\s*\{[^}\n]*\}/g, '');
+    let out = '';
+    for (let i = 0; i < code.length;) {
+        const char = code[i];
+        if (char === '"' || char === "'") {
+            const end = skipQuotedString(code, i, char);
+            out += code.slice(i, end);
+            i = end;
+            continue;
+        }
+        if (char === '[' && /^(\[=*\[)/.test(code.slice(i))) {
+            const end = skipLongBracket(code, i);
+            out += code.slice(i, end);
+            i = end;
+            continue;
+        }
+        if (char === ':' && code[i + 1] === ':') {
+            i += 2;
+            while (isSpace(code[i])) i++;
+            let depth = 0;
+            let lastTypeIndex = i;
+            while (i < code.length) {
+                const c = code[i];
+                if (c === '<' || c === '{' || c === '(') depth++;
+                if (c === '>' || c === '}' || c === ')') {
+                    if (depth === 0 && c === ')') break;
+                    depth = Math.max(0, depth - 1);
+                }
+                if (depth === 0 && /[,;\n\]\}]/.test(c)) break;
+                if (depth === 0 && isSpace(c)) {
+                    const lookahead = code.slice(i);
+                    if (/^\s*(and|or|then|do|else|elseif|end|return|local)\b/.test(lookahead)) break;
+                    lastTypeIndex = i;
+                }
+                i++;
+            }
+            if (i < code.length && isSpace(code[i]) && lastTypeIndex > 0) {
+                i = lastTypeIndex;
+            }
+            continue;
+        }
+        out += char;
+        i++;
+    }
+    return out;
+};
+
 const convertCompoundAssignments = (code) => {
     return code.replace(/^(\s*)([A-Za-z_][A-Za-z0-9_]*(?:\s*(?:\.|:)\s*[A-Za-z_][A-Za-z0-9_]*|\s*\[[^\n\]]+\])*)\s*(\+=|-=|\*=|\/=|%=|\^=)\s*(.+)$/gm, (_, indent, lhs, op, rhs) => {
         return `${indent}${lhs} = ${lhs} ${op[0]} (${rhs})`;
@@ -322,6 +423,8 @@ const convertCompoundAssignments = (code) => {
 const preprocessLuau = (code) => {
     let out = stripComments(code);
     out = convertAllInterpolatedStrings(out);
+    out = stripLuauGenerics(out);
+    out = stripLuauCasts(out);
     out = removeLuauTypes(out);
     out = convertCompoundAssignments(out);
     out = out.replace(/\bcontinue\b/g, 'break');
@@ -675,7 +778,29 @@ const astToCode = (node) => {
     }
 };
 
-const parseChunk = (code) => luaparse.parse(code, { comments: false, scope: false, luaVersion: '5.2' });
+const getErrorContext = (code, err) => {
+    const match = String(err.message || '').match(/\[(\d+):(\d+)\]/);
+    if (!match) return '';
+    const lineNo = Number(match[1]);
+    const lines = code.split('\n');
+    const start = Math.max(1, lineNo - 2);
+    const end = Math.min(lines.length, lineNo + 2);
+    const excerpt = [];
+    for (let line = start; line <= end; line++) {
+        excerpt.push(`${line}: ${lines[line - 1] || ''}`);
+    }
+    return excerpt.join(' | ');
+};
+
+const parseChunk = (code) => {
+    try {
+        return luaparse.parse(code, { comments: false, scope: false, luaVersion: '5.2' });
+    } catch (err) {
+        const context = getErrorContext(code, err);
+        err.message = context ? `${err.message} | preprocessed: ${context}` : err.message;
+        throw err;
+    }
+};
 
 const transformLuaSnippet = async (code, state) => {
     const ast = parseChunk(preprocessLuau(code));
