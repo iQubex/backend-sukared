@@ -6,12 +6,23 @@ const app = express();
 app.use(cors()); // 2. EKLENEN SATIR: Tarayıcı engellerini kaldırdık
 app.use(express.json());
 
-// Opaque Predicates (Kör Düğümler) Üreteci
+// Opaque Predicates (Kör Düğümler) Üreteci ve İsimlendiriciler
+const generateLookalikeName = () => {
+    const startChars = ['l', 'I', 'O', '_'];
+    const bodyChars = ['l', 'I', '1', 'O', '0', '_'];
+    let len = Math.floor(Math.random() * 8) + 12; // 12 to 20 karakter uzunluğunda
+    let name = startChars[Math.floor(Math.random() * startChars.length)];
+    for (let i = 1; i < len; i++) {
+        name += bodyChars[Math.floor(Math.random() * bodyChars.length)];
+    }
+    return name;
+};
+
 const generateOpaquePredicate = () => {
     const x = Math.floor(Math.random() * 50) + 5;
     const y = Math.floor(Math.random() * 50) + 5;
     
-    const rVar = () => 'lI' + Math.random().toString(36).substring(7).replace(/[0-9]/g, 'I') + Math.floor(Math.random() * 100);
+    const rVar = generateLookalikeName;
 
     const alwaysTrue = [
         `((math.sin(${x}) * math.sin(${x}) + math.cos(${x}) * math.cos(${x})) > 0.999)`,
@@ -91,14 +102,27 @@ const insertOpaquePredicates = (code) => {
     return result.join('\n');
 };
 
-// String Şifreleme ve Decode Fonksiyonu Ekleme
+// String Şifreleme ve Decode Fonksiyonu Ekleme (Braille, Asya karakterleri ile)
+const unicodeAlphabet = ['⠁', '⠂', '⠃', '⠄', '⠅', '⠆', '⠇', '⠈', 'ア', 'イ', 'ウ', 'エ', '一', '二', '三', '四'];
+
+const encodeStringToUnicode = (str, key) => {
+    let encoded = '';
+    for (let i = 0; i < str.length; i++) {
+        const encryptedByte = (str.charCodeAt(i) + key) % 256;
+        const highNibble = Math.floor(encryptedByte / 16);
+        const lowNibble = encryptedByte % 16;
+        encoded += unicodeAlphabet[highNibble] + unicodeAlphabet[lowNibble];
+    }
+    return encoded;
+};
+
 const encryptStringsAndAddDecrypt = (code) => {
     // Yorum satırlarını temizleme
     let cleanedCode = code
         .replace(/--\[\[[\s\S]*?\]\]/g, '')
         .replace(/--.*$/gm, '');
 
-    // String ifadeleri yakalayan regex (escaped tırnak işaretlerini de destekler)
+    // String ifadeleri yakalayan regex
     const stringRegex = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g;
     
     let hasStrings = false;
@@ -108,38 +132,16 @@ const encryptStringsAndAddDecrypt = (code) => {
         
         hasStrings = true;
         const key = Math.floor(Math.random() * 254) + 1;
-        const bytes = [];
-        for (let i = 0; i < str.length; i++) {
-            bytes.push((str.charCodeAt(i) + key) % 256);
-        }
-        return `_DECRYPT({${bytes.join(',')}},${key})`;
+        const encodedStr = encodeStringToUnicode(str, key);
+        return `_DECRYPT("${encodedStr}",${key})`;
     });
 
     if (hasStrings) {
-        // Luau için sıkıştırılmış decode fonksiyonu
-        const decryptFn = `local function _DECRYPT(t,k)local s=""for i=1,#t do s=s..string.char((t[i]-k)%256)end return s end `;
+        // Luau için gmatch tabanlı UTF-8 decode fonksiyonu
+        const decryptFn = `local function _DECRYPT(s,k)local m={["⠁"]=0,["⠂"]=1,["⠃"]=2,["⠄"]=3,["⠅"]=4,["⠆"]=5,["⠇"]=6,["⠈"]=7,["ア"]=8,["イ"]=9,["ウ"]=10,["エ"]=11,["一"]=12,["二"]=13,["三"]=14,["四"]=15}local b={}local t=nilfor c in string.gmatch(s,"([%z\\1-\\127\\194-\\244][\\128-\\191]*)")do local v=m[c]if v then if not t then t=v else table.insert(b,t*16+v)t=nil end end end local r=""for i=1,#b do r=r..string.char((b[i]-k)%256)end return r end `;
         obfCode = decryptFn + obfCode;
     }
     return obfCode;
-};
-
-// Unicode Değişken İsimleri (Braille, Katakana, Çince, Zero-Width) Üreteci
-const unicodePool = [
-    ...'⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏⠐⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟',
-    ...'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン',
-    ...'一二三四五六七八九十百千万大小上下左右月火水木金土',
-    '\u200B', '\u200C', '\u200D'
-];
-
-const generateUnicodeName = () => {
-    let len = Math.floor(Math.random() * 5) + 5;
-    let name = '';
-    const startPool = unicodePool.filter(c => c !== '\u200B' && c !== '\u200C' && c !== '\u200D');
-    name += startPool[Math.floor(Math.random() * startPool.length)];
-    for (let i = 1; i < len; i++) {
-        name += unicodePool[Math.floor(Math.random() * unicodePool.length)];
-    }
-    return name;
 };
 
 const renameVariables = (code) => {
@@ -191,12 +193,12 @@ const renameVariables = (code) => {
     const usedNames = new Set();
 
     varsToRename.forEach(v => {
-        let uName = generateUnicodeName();
-        while (usedNames.has(uName)) {
-            uName = generateUnicodeName();
+        let lName = generateLookalikeName();
+        while (usedNames.has(lName)) {
+            lName = generateLookalikeName();
         }
-        usedNames.add(uName);
-        renameMap[v] = uName;
+        usedNames.add(lName);
+        renameMap[v] = lName;
     });
 
     let obfCode = code;
