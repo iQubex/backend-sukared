@@ -91,31 +91,153 @@ const insertOpaquePredicates = (code) => {
     return result.join('\n');
 };
 
+// String Şifreleme ve Decode Fonksiyonu Ekleme
+const encryptStringsAndAddDecrypt = (code) => {
+    // Yorum satırlarını temizleme
+    let cleanedCode = code
+        .replace(/--\[\[[\s\S]*?\]\]/g, '')
+        .replace(/--.*$/gm, '');
+
+    // String ifadeleri yakalayan regex (escaped tırnak işaretlerini de destekler)
+    const stringRegex = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g;
+    
+    let hasStrings = false;
+    let obfCode = cleanedCode.replace(stringRegex, (match, p1, p2) => {
+        const str = p1 !== undefined ? p1 : p2;
+        if (str.length === 0) return match;
+        
+        hasStrings = true;
+        const key = Math.floor(Math.random() * 254) + 1;
+        const bytes = [];
+        for (let i = 0; i < str.length; i++) {
+            bytes.push((str.charCodeAt(i) + key) % 256);
+        }
+        return `_DECRYPT({${bytes.join(',')}},${key})`;
+    });
+
+    if (hasStrings) {
+        // Luau için sıkıştırılmış decode fonksiyonu
+        const decryptFn = `local function _DECRYPT(t,k)local s=""for i=1,#t do s=s..string.char((t[i]-k)%256)end return s end `;
+        obfCode = decryptFn + obfCode;
+    }
+    return obfCode;
+};
+
+// Unicode Değişken İsimleri (Braille, Katakana, Çince, Zero-Width) Üreteci
+const unicodePool = [
+    ...'⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏⠐⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟',
+    ...'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン',
+    ...'一二三四五六七八九十百千万大小上下左右月火水木金土',
+    '\u200B', '\u200C', '\u200D'
+];
+
+const generateUnicodeName = () => {
+    let len = Math.floor(Math.random() * 5) + 5;
+    let name = '';
+    const startPool = unicodePool.filter(c => c !== '\u200B' && c !== '\u200C' && c !== '\u200D');
+    name += startPool[Math.floor(Math.random() * startPool.length)];
+    for (let i = 1; i < len; i++) {
+        name += unicodePool[Math.floor(Math.random() * unicodePool.length)];
+    }
+    return name;
+};
+
+const renameVariables = (code) => {
+    const varSet = new Set();
+    
+    const localFuncRegex = /local\s+function\s+([a-zA-Z_]\w*)/g;
+    let match;
+    while ((match = localFuncRegex.exec(code)) !== null) {
+        varSet.add(match[1]);
+    }
+    
+    const funcRegex = /function\s+([a-zA-Z_]\w*)/g;
+    while ((match = funcRegex.exec(code)) !== null) {
+        varSet.add(match[1]);
+    }
+
+    const localValRegex = /local\s+([a-zA-Z_]\w*(?:\s*,\s*[a-zA-Z_]\w*)*)/g;
+    while ((match = localValRegex.exec(code)) !== null) {
+        const vars = match[1].split(',').map(v => v.trim());
+        vars.forEach(v => {
+            if (v) varSet.add(v);
+        });
+    }
+
+    const paramRegex = /function\s+[a-zA-Z_]\w*\s*\(([^)]*)\)/g;
+    while ((match = paramRegex.exec(code)) !== null) {
+        const params = match[1].split(',').map(p => p.trim());
+        params.forEach(p => {
+            if (p && p !== '...') varSet.add(p);
+        });
+    }
+
+    if (code.includes('_DECRYPT')) {
+        varSet.add('_DECRYPT');
+    }
+
+    const keywords = new Set([
+        'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function',
+        'if', 'in', 'local', 'nil', 'not', 'or', 'repeat', 'return', 'then',
+        'true', 'until', 'while', 'math', 'string', 'table', 'print', 'pairs',
+        'ipairs', 'tostring', 'tonumber', 'next', 'select', 'warn', 'error'
+    ]);
+    
+    const varsToRename = Array.from(varSet).filter(v => !keywords.has(v));
+
+    varsToRename.sort((a, b) => b.length - a.length);
+
+    const renameMap = {};
+    const usedNames = new Set();
+
+    varsToRename.forEach(v => {
+        let uName = generateUnicodeName();
+        while (usedNames.has(uName)) {
+            uName = generateUnicodeName();
+        }
+        usedNames.add(uName);
+        renameMap[v] = uName;
+    });
+
+    let obfCode = code;
+    varsToRename.forEach(v => {
+        const reg = new RegExp('\\b' + v + '\\b', 'g');
+        obfCode = obfCode.replace(reg, renameMap[v]);
+    });
+
+    return obfCode;
+};
+
+// Kodları Tek Satırda Birleştirme
+const minifyLuau = (code) => {
+    return code.replace(/\s+/g, ' ').trim();
+};
+
 app.post('/obfuscate', (req, res) => {
     let code = req.body.code;
     if (!code) return res.status(400).send({ error: "Kod gönder kanka!" });
 
-    // 1. Aşama: String Şifreleme (Metinleri ASCII sayılarına çevirir)
-    let obfCode = code.replace(/"(.*?)"/g, (match, p1) => {
-        let bytes = [];
-        for (let i = 0; i < p1.length; i++) {
-            bytes.push(p1.charCodeAt(i));
-        }
-        return `string.char(${bytes.join(', ')})`;
-    });
+    try {
+        // 1. Aşama: Yorum Satırlarını Sil, Stringleri Şifrele ve Decode Fonksiyonu Ekle
+        let obfCode = encryptStringsAndAddDecrypt(code);
 
-    // 2. Aşama: Basit Değişken Bozucu
-    const randomName = () => 'lI' + Math.random().toString(36).substring(7).replace(/[0-9]/g, 'I');
-    obfCode = obfCode.replace(/local\s+([a-zA-Z_]\w*)\s*=/g, `local ${randomName()} =`);
+        // 2. Aşama: Opaque Predicates (Kör Düğümler) Ekleme
+        obfCode = insertOpaquePredicates(obfCode);
 
-    // 3. Aşama: Opaque Predicates (Kör Düğümler) Ekleme
-    obfCode = insertOpaquePredicates(obfCode);
+        // 3. Aşama: Değişken ve Fonksiyon İsimlerini Unicode Karakterlerle Değiştir
+        obfCode = renameVariables(obfCode);
 
-    res.json({
-        status: "success",
-        original_length: code.length,
-        obfuscated: obfCode
-    });
+        // 4. Aşama: Kodları Sıkıştır ve Birleştir (Tek Satır/Düzen Gözetmeksizin)
+        obfCode = minifyLuau(obfCode);
+
+        res.json({
+            status: "success",
+            original_length: code.length,
+            obfuscated: obfCode
+        });
+    } catch (err) {
+        res.status(500).json({ error: "Obfuscation sırasında bir hata oluştu: " + err.message });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
