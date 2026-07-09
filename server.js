@@ -3,6 +3,7 @@ const cors = require('cors');
 const luaparse = require('luaparse');
 const { preprocessLuau } = require('./luauPreprocessor');
 const { createVmBundle } = require('./vmEngine');
+const { ALL_TERMS } = require('./luauTerms');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,6 +15,7 @@ const YIELD_EVERY_NODES = 1500;
 const MAX_OPAQUE_INSERTIONS = 80;
 const unicodeAlphabet = ['⠁', '⠂', '⠃', '⠄', '⠅', '⠆', '⠇', '⠈', 'ア', 'イ', 'ウ', 'エ', '一', '二', '三', '四'];
 const runtimeNames = new Set(['getfenv', 'lIIll_10O_l', 'lO_10O_lI']);
+const knownLuauTerms = ALL_TERMS;
 
 const generateLookalikeName = () => {
     const startChars = ['l', 'I', 'O', '_'];
@@ -25,6 +27,10 @@ const generateLookalikeName = () => {
     }
     return name;
 };
+
+const generateIgnoredLookalikeName = () => `_${generateLookalikeName()}`;
+
+const joinStatements = (nodes) => (nodes || []).map(astToCode).filter(Boolean).join(';');
 
 const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 
@@ -544,7 +550,7 @@ const walkAstAsync = async (root, rootScope, state) => {
                 pushArray(stack, node.init, scope);
                 for (const id of node.variables || []) {
                     if (id && id.type === 'Identifier') {
-                        const newName = generateLookalikeName();
+                        const newName = generateIgnoredLookalikeName();
                         scope.define(id.name, newName);
                         id.name = newName;
                     }
@@ -583,7 +589,7 @@ const walkAstAsync = async (root, rootScope, state) => {
                 stack.push({ node: node.start, scope });
                 const forScope = new Scope(scope);
                 if (node.variable) {
-                    const newName = generateLookalikeName();
+                    const newName = generateIgnoredLookalikeName();
                     forScope.define(node.variable.name, newName);
                     node.variable.name = newName;
                 }
@@ -595,7 +601,7 @@ const walkAstAsync = async (root, rootScope, state) => {
                 const forScope = new Scope(scope);
                 for (const id of node.variables || []) {
                     if (id && id.type === 'Identifier') {
-                        const newName = generateLookalikeName();
+                        const newName = generateIgnoredLookalikeName();
                         forScope.define(id.name, newName);
                         id.name = newName;
                     }
@@ -609,7 +615,7 @@ const walkAstAsync = async (root, rootScope, state) => {
             case 'FunctionDeclaration': {
                 if (node.identifier) {
                     if (node.isLocal && node.identifier.type === 'Identifier') {
-                        const newName = generateLookalikeName();
+                        const newName = generateIgnoredLookalikeName();
                         scope.define(node.identifier.name, newName);
                         node.identifier.name = newName;
                     } else {
@@ -620,7 +626,7 @@ const walkAstAsync = async (root, rootScope, state) => {
                 const fnScope = new Scope(scope);
                 for (const param of node.parameters || []) {
                     if (param && param.type === 'Identifier') {
-                        const newName = generateLookalikeName();
+                        const newName = generateIgnoredLookalikeName();
                         fnScope.define(param.name, newName);
                         param.name = newName;
                     }
@@ -697,7 +703,7 @@ const astToCode = (node) => {
 
     switch (node.type) {
         case 'Chunk':
-            return (node.body || []).map(astToCode).join(' ');
+            return joinStatements(node.body);
         case 'LocalStatement': {
             const vars = (node.variables || []).map(astToCode).join(',');
             const inits = (node.init || []).map(astToCode).join(',');
@@ -710,29 +716,29 @@ const astToCode = (node) => {
         case 'IfStatement': {
             let code = '';
             for (const clause of node.clauses || []) {
-                if (clause.type === 'IfClause') code += `if ${astToCode(clause.condition)} then ${(clause.body || []).map(astToCode).join(' ')}`;
-                else if (clause.type === 'ElseifClause') code += ` elseif ${astToCode(clause.condition)} then ${(clause.body || []).map(astToCode).join(' ')}`;
-                else code += ` else ${(clause.body || []).map(astToCode).join(' ')}`;
+                if (clause.type === 'IfClause') code += `if ${astToCode(clause.condition)} then ${joinStatements(clause.body)}`;
+                else if (clause.type === 'ElseifClause') code += ` elseif ${astToCode(clause.condition)} then ${joinStatements(clause.body)}`;
+                else code += ` else ${joinStatements(clause.body)}`;
             }
             return `${code} end`;
         }
         case 'WhileStatement':
-            return `while ${astToCode(node.condition)} do ${(node.body || []).map(astToCode).join(' ')} end`;
+            return `while ${astToCode(node.condition)} do ${joinStatements(node.body)} end`;
         case 'RepeatStatement':
-            return `repeat ${(node.body || []).map(astToCode).join(' ')} until ${astToCode(node.condition)}`;
+            return `repeat ${joinStatements(node.body)} until ${astToCode(node.condition)}`;
         case 'ForNumericStatement': {
             const step = node.step ? `,${astToCode(node.step)}` : '';
-            return `for ${astToCode(node.variable)}=${astToCode(node.start)},${astToCode(node.end)}${step} do ${(node.body || []).map(astToCode).join(' ')} end`;
+            return `for ${astToCode(node.variable)}=${astToCode(node.start)},${astToCode(node.end)}${step} do ${joinStatements(node.body)} end`;
         }
         case 'ForGenericStatement':
-            return `for ${(node.variables || []).map(astToCode).join(',')} in ${(node.iterators || []).map(astToCode).join(',')} do ${(node.body || []).map(astToCode).join(' ')} end`;
+            return `for ${(node.variables || []).map(astToCode).join(',')} in ${(node.iterators || []).map(astToCode).join(',')} do ${joinStatements(node.body)} end`;
         case 'ReturnStatement':
             return `return ${(node.arguments || []).map(astToCode).join(',')}`;
         case 'BreakStatement':
             return 'break';
         case 'FunctionDeclaration': {
             const params = (node.parameters || []).map(astToCode);
-            const body = (node.body || []).map(astToCode).join(' ');
+            const body = joinStatements(node.body);
             if (!node.identifier) return `function(${params.join(',')}) ${body} end`;
             if (node.isLocal) return `local function ${astToCode(node.identifier)}(${params.join(',')}) ${body} end`;
             const fnParams = node.implicitSelf ? ['self', ...params] : params;
@@ -812,7 +818,7 @@ const transformLuaSnippet = async (code, state) => {
 
 const generateOpaquePredicate = () => {
     const x = Math.floor(Math.random() * 50) + 5;
-    return `if (math.sqrt(${x * x}) == ${x}) then local ${generateLookalikeName()} = math.floor(math.pi) end`;
+    return `if (math.sqrt(${x * x}) == ${x}) then local ${generateIgnoredLookalikeName()} = math.floor(math.pi) end`;
 };
 
 const insertOpaquePredicatesAsync = async (code, state) => {
@@ -839,7 +845,7 @@ const createDecryptRuntime = () => {
     const insertLookup = luaDecimalString('insert');
     const charLookup = luaDecimalString('char');
 
-    return `local function lIIll_10O_l(s,k)local lS=getfenv()[${stringLookup}]local lT=getfenv()[${tableLookup}]local lM={["⠁"]=0,["⠂"]=1,["⠃"]=2,["⠄"]=3,["⠅"]=4,["⠆"]=5,["⠇"]=6,["⠈"]=7,["ア"]=8,["イ"]=9,["ウ"]=10,["エ"]=11,["一"]=12,["二"]=13,["三"]=14,["四"]=15}local b={}local t=nil for c in lS[${gmatchLookup}](s,"([%z\\1-\\127\\194-\\244][\\128-\\191]*)")do local v=lM[c]if v~=nil then if t==nil then t=v else lT[${insertLookup}](b,t*16+v)t=nil end end end local r=""for i=1,#b do r=r..lS[${charLookup}]((b[i]-k)%256)end return r end `;
+    return `local function lIIll_10O_l(s,k);local lS=getfenv()[${stringLookup}];local lT=getfenv()[${tableLookup}];local lM={["⠁"]=0,["⠂"]=1,["⠃"]=2,["⠄"]=3,["⠅"]=4,["⠆"]=5,["⠇"]=6,["⠈"]=7,["ア"]=8,["イ"]=9,["ウ"]=10,["エ"]=11,["一"]=12,["二"]=13,["三"]=14,["四"]=15};local b={};local t=nil;for c in lS[${gmatchLookup}](s,"([%z\\1-\\127\\194-\\244][\\128-\\191]*)")do local v=lM[c];if v~=nil then if t==nil then t=v else lT[${insertLookup}](b,t*16+v);t=nil end end end;local r="";for i=1,#b do r=r..lS[${charLookup}]((b[i]-k)%256)end;return r end;`;
 };
 
 const createAntiTamper = () => (

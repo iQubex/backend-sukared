@@ -55,7 +55,7 @@ const createVmBundle = (source) => {
         `local __FN,__ER=__L(__SRC)`,
         `if not __FN then if __ERR then __ERR(__ER) else while true do end end end`,
         `return __FN()`
-    ].join(' ');
+    ].join(';');
 };
 
 module.exports = {
