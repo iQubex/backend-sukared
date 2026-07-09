@@ -224,10 +224,14 @@ app.post('/obfuscate', (req, res) => {
         // 2. Aşama: Opaque Predicates (Kör Düğümler) Ekleme
         obfCode = insertOpaquePredicates(obfCode);
 
-        // 3. Aşama: Değişken ve Fonksiyon İsimlerini Unicode Karakterlerle Değiştir
+        // 3. Aşama: Anti-Tamper Header (Hile/Hook Engelleyici) Ekleme
+        const antiTamper = `local function _CHECK() if not debug or type(debug) ~= "table" or not debug.info then while true do end end if debug.info(debug.info, "s") ~= "[C]" then while true do end end local function dummy() end if debug.info(dummy, "s") == "[C]" then while true do end end local list = {string.char, pcall, xpcall, unpack, setmetatable} if getfenv then table.insert(list, getfenv) end for i = 1, #list do if type(list[i]) ~= "function" or debug.info(list[i], "s") ~= "[C]" then while true do end end end end _CHECK() `;
+        obfCode = antiTamper + obfCode;
+
+        // 4. Aşama: Değişken ve Fonksiyon İsimlerini Unicode Karakterlerle Değiştir
         obfCode = renameVariables(obfCode);
 
-        // 4. Aşama: Kodları Sıkıştır ve Birleştir (Tek Satır/Düzen Gözetmeksizin)
+        // 5. Aşama: Kodları Sıkıştır ve Birleştir (Tek Satır/Düzen Gözetmeksizin)
         obfCode = minifyLuau(obfCode);
 
         res.json({
