@@ -1,11 +1,13 @@
-const GLYPH_POOLS = [
-    ['⠁', '⠂', '⠃', '⠄', '⠅', '⠆', '⠇', '⠈', '⠉', '⠊', '⠋', '⠌', '⠍', '⠎', '⠏', '⠐'],
-    ['ア', 'イ', 'ウ', 'エ', 'オ', 'カ', 'キ', 'ク', 'ケ', 'コ', 'サ', 'シ', 'ス', 'セ', 'ソ', 'タ'],
-    ['अ', 'आ', 'इ', 'ई', 'उ', 'ऊ', 'ए', 'ऐ', 'ओ', 'क', 'ख', 'ग', 'च', 'ज', 'ट', 'ड'],
-    ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '月', '火', '水', '木', '金', '土'],
-    ['ༀ', '༁', '༂', '༃', '༄', '༅', '༆', '༇', '༈', '༉', '༊', '་', '༌', '།', '༎', '༏'],
-    ['※', '⁂', '⁑', '⁜', '◈', '◇', '◆', '◌', '◎', '◉', '◍', '◐', '◑', '◒', '◓', '◔']
+const UNICODE_DECOYS = [
+    '⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏⠐',
+    'アイウエオカキクケコサシスセソタ',
+    'अआइईउऊएऐओकखगचजटड',
+    '一二三四五六七八九十月火水木金土',
+    'ༀ༁༂༃༄༅༆༇༈༉༊་༌།༎༏',
+    '※⁂⁑⁜◈◇◆◌◎◉◍◐◑◒◓◔'
 ];
+
+const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789$_'.split('');
 
 const randomKey = () => Math.floor(Math.random() * 220) + 17;
 
@@ -18,42 +20,60 @@ const shuffle = (items) => {
     return out;
 };
 
-const pickAlphabet = () => {
-    const pool = GLYPH_POOLS[Math.floor(Math.random() * GLYPH_POOLS.length)];
-    return shuffle(pool).slice(0, 16);
-};
-
 const luaDecimalString = (value) => `"${[...value].map(char => `\\${char.charCodeAt(0)}`).join('')}"`;
 
-const luaUtf8String = (value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+const luaSafeString = (value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
-const encodePayloadGlyphs = (source, key, alphabet) => {
+const encryptBytes = (source, key) => {
     const bytes = Buffer.from(source, 'utf8');
-    let encoded = '';
+    const out = new Array(bytes.length);
     for (let i = 0; i < bytes.length; i++) {
-        const mixed = (bytes[i] + key + ((i * 7) % 251) + (i % 13)) % 256;
-        encoded += alphabet[(mixed >> 4) & 15] + alphabet[mixed & 15];
+        out[i] = (bytes[i] + key + ((i * 13) % 251) + (i % 17)) % 256;
     }
-    return encoded;
+    return out;
 };
 
-const createMapLiteral = (alphabet) => {
-    return `{${alphabet.map((glyph, index) => `[${luaUtf8String(glyph)}]=${index}`).join(',')}}`;
+const encodeCustom64 = (bytes, alphabet) => {
+    let acc = 0;
+    let bits = 0;
+    let out = '';
+    for (const byte of bytes) {
+        acc = (acc << 8) | byte;
+        bits += 8;
+        while (bits >= 6) {
+            bits -= 6;
+            out += alphabet[(acc >> bits) & 63];
+        }
+    }
+    if (bits > 0) {
+        out += alphabet[(acc << (6 - bits)) & 63];
+    }
+    return out;
 };
 
-const createDecoyAlphabet = () => luaUtf8String(shuffle(GLYPH_POOLS.flat()).slice(0, 32).join(''));
+const makeDecoy = () => {
+    const chars = shuffle(UNICODE_DECOYS.join('').split(''));
+    return chars.slice(0, 48).join('');
+};
+
+const rand = (prefix) => `_${prefix}${Math.floor(Math.random() * 90000 + 10000)}`;
 
 const createVmBundle = (source) => {
     const key = randomKey();
-    const alphabet = pickAlphabet();
-    const payload = luaUtf8String(encodePayloadGlyphs(source, key, alphabet));
-    const map = createMapLiteral(alphabet);
+    const alphabet = shuffle(BASE64_ALPHABET).join('');
+    const encrypted = encryptBytes(source, key);
+    const payload = encodeCustom64(encrypted, alphabet);
+    const decoyA = makeDecoy();
+    const decoyB = makeDecoy();
+
     const k = {
         string: luaDecimalString('string'),
         table: luaDecimalString('table'),
+        math: luaDecimalString('math'),
+        byte: luaDecimalString('byte'),
         char: luaDecimalString('char'),
         concat: luaDecimalString('concat'),
-        gmatch: luaDecimalString('gmatch'),
+        floor: luaDecimalString('floor'),
         loadstring: luaDecimalString('loadstring'),
         debug: luaDecimalString('debug'),
         info: luaDecimalString('info'),
@@ -63,32 +83,37 @@ const createVmBundle = (source) => {
         tableType: luaDecimalString('table'),
         functionType: luaDecimalString('function'),
         sourceKind: luaDecimalString('s'),
-        utf8Pattern: luaDecimalString('([%z\\1-\\127\\194-\\244][\\128-\\191]*)'),
         loadstringError: luaDecimalString('SukaRed VM requires loadstring')
     };
 
     const v = {
-        env: '_ENV' + Math.floor(Math.random() * 9999),
-        str: '_S' + Math.floor(Math.random() * 9999),
-        tab: '_T' + Math.floor(Math.random() * 9999),
-        typ: '_Y' + Math.floor(Math.random() * 9999),
-        pc: '_P' + Math.floor(Math.random() * 9999),
-        err: '_R' + Math.floor(Math.random() * 9999),
-        dbg: '_D' + Math.floor(Math.random() * 9999),
-        map: '_M' + Math.floor(Math.random() * 9999),
-        pay: '_Q' + Math.floor(Math.random() * 9999),
-        out: '_O' + Math.floor(Math.random() * 9999),
-        hi: '_H' + Math.floor(Math.random() * 9999),
-        idx: '_I' + Math.floor(Math.random() * 9999),
-        ch: '_C' + Math.floor(Math.random() * 9999),
-        val: '_V' + Math.floor(Math.random() * 9999),
-        src: '_X' + Math.floor(Math.random() * 9999),
-        load: '_L' + Math.floor(Math.random() * 9999),
-        fn: '_F' + Math.floor(Math.random() * 9999),
-        le: '_E' + Math.floor(Math.random() * 9999),
-        ok: '_K' + Math.floor(Math.random() * 9999),
-        re: '_N' + Math.floor(Math.random() * 9999),
-        salt: '_Z' + Math.floor(Math.random() * 9999)
+        env: rand('ENV'),
+        str: rand('S'),
+        tab: rand('T'),
+        mat: rand('MATH'),
+        typ: rand('TY'),
+        pc: rand('PC'),
+        err: rand('ER'),
+        dbg: rand('DBG'),
+        alphabet: rand('A'),
+        map: rand('MAP'),
+        payload: rand('PAY'),
+        out: rand('OUT'),
+        acc: rand('ACC'),
+        bits: rand('BITS'),
+        idx: rand('IDX'),
+        i: rand('I'),
+        c: rand('C'),
+        n: rand('N'),
+        b: rand('B'),
+        src: rand('SRC'),
+        load: rand('LOAD'),
+        fn: rand('FN'),
+        le: rand('LE'),
+        ok: rand('OK'),
+        re: rand('RE'),
+        decoyA: rand('GL'),
+        decoyB: rand('VX')
     };
 
     const parts = [
@@ -96,25 +121,31 @@ const createVmBundle = (source) => {
         `local ${v.env}=getfenv()`,
         `local ${v.str}=${v.env}[${k.string}]`,
         `local ${v.tab}=${v.env}[${k.table}]`,
+        `local ${v.mat}=${v.env}[${k.math}]`,
         `local ${v.typ}=${v.env}[${k.type}]`,
         `local ${v.pc}=${v.env}[${k.pcall}]`,
         `local ${v.err}=${v.env}[${k.error}]`,
         `local ${v.dbg}=${v.env}[${k.debug}]`,
-        `local ${v.salt}=${createDecoyAlphabet()}`,
-        `if(not ${v.str})or(not ${v.tab})or(${v.typ} and ${v.typ}(${v.str})~=${k.tableType})then while true do end end`,
-        `if ${v.dbg} and ${v.dbg}[${k.info}]then local _ok=${v.pc}(function()return ${v.dbg}[${k.info}](${v.dbg}[${k.info}],${k.sourceKind})end)if not _ok then while true do end end end`,
-        `local ${v.map}=${map}`,
-        `local ${v.pay}=${payload}`,
+        `local ${v.decoyA}=${luaSafeString(decoyA)}`,
+        `local ${v.decoyB}=${luaSafeString(decoyB)}`,
+        `local ${v.alphabet}=${luaSafeString(alphabet)}`,
+        `if (not ${v.str}) or (not ${v.tab}) or (not ${v.mat}) or (${v.typ} and ${v.typ}(${v.str})~=${k.tableType}) then while true do end end`,
+        `if ${v.dbg} and ${v.dbg}[${k.info}] and ${v.pc} then local _ok=${v.pc}(function()return ${v.dbg}[${k.info}](${v.dbg}[${k.info}],${k.sourceKind})end) if not _ok then while true do end end end`,
+        `local ${v.map}={}`,
+        `for ${v.i}=1,#${v.alphabet} do ${v.map}[${v.str}[${k.byte}](${v.alphabet},${v.i})]=${v.i}-1 end`,
+        `local ${v.payload}=${luaSafeString(payload)}`,
         `local ${v.out}={}`,
-        `local ${v.hi}=nil`,
+        `local ${v.acc}=0`,
+        `local ${v.bits}=0`,
         `local ${v.idx}=1`,
-        `for ${v.ch} in ${v.str}[${k.gmatch}](${v.pay},${k.utf8Pattern})do local ${v.val}=${v.map}[${v.ch}] if ${v.val}~=nil then if ${v.hi}==nil then ${v.hi}=${v.val} else local _B=${v.hi}*16+${v.val} ${v.out}[${v.idx}]=${v.str}[${k.char}]((_B-${key}-(((${v.idx}-1)*7)%251)-(((${v.idx}-1)%13)))%256) ${v.idx}=${v.idx}+1 ${v.hi}=nil end end end`,
+        `for ${v.i}=1,#${v.payload} do ${v.c}=${v.map}[${v.str}[${k.byte}](${v.payload},${v.i})] if ${v.c}~=nil then ${v.acc}=${v.acc}*64+${v.c} ${v.bits}=${v.bits}+6 if ${v.bits}>=8 then ${v.bits}=${v.bits}-8 ${v.n}=${v.mat}[${k.floor}](${v.acc}/(2^${v.bits}))%256 ${v.acc}=${v.acc}%(2^${v.bits}) ${v.b}=(${v.n}-${key}-(((${v.idx}-1)*13)%251)-(((${v.idx}-1)%17)))%256 ${v.out}[${v.idx}]=${v.str}[${k.char}](${v.b}) ${v.idx}=${v.idx}+1 end end end`,
         `local ${v.src}=${v.tab}[${k.concat}](${v.out})`,
         `local ${v.load}=${v.env}[${k.loadstring}]`,
-        `if(not ${v.load})or(${v.typ} and ${v.typ}(${v.load})~=${k.functionType})then if ${v.err} then ${v.err}(${k.loadstringError})else while true do end end end`,
+        `if (not ${v.load}) or (${v.typ} and ${v.typ}(${v.load})~=${k.functionType}) then if ${v.err} then ${v.err}(${k.loadstringError})else while true do end end end`,
         `local ${v.fn},${v.le}=${v.load}(${v.src})`,
         `if not ${v.fn} then if ${v.err} then ${v.err}(${v.le})else while true do end end end`,
-        `local ${v.ok},${v.re}=${v.pc}(${v.fn})`,
+        `local ${v.ok},${v.re}`,
+        `if ${v.pc} then ${v.ok},${v.re}=${v.pc}(${v.fn}) else ${v.ok}=true ${v.re}=${v.fn}() end`,
         `if not ${v.ok} then if ${v.err} then ${v.err}(${v.re})else while true do end end end`,
         'end)()'
     ];
