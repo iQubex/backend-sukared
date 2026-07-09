@@ -30,7 +30,7 @@ const generateLookalikeName = () => {
 
 const generateIgnoredLookalikeName = () => `_${generateLookalikeName()}`;
 
-const joinStatements = (nodes) => (nodes || []).map(astToCode).filter(Boolean).join(';');
+const joinStatements = (nodes) => (nodes || []).map(astToCode).filter(Boolean).join('\n');
 
 const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 
@@ -845,7 +845,18 @@ const createDecryptRuntime = () => {
     const insertLookup = luaDecimalString('insert');
     const charLookup = luaDecimalString('char');
 
-    return `local function lIIll_10O_l(s,k);local lS=getfenv()[${stringLookup}];local lT=getfenv()[${tableLookup}];local lM={["⠁"]=0,["⠂"]=1,["⠃"]=2,["⠄"]=3,["⠅"]=4,["⠆"]=5,["⠇"]=6,["⠈"]=7,["ア"]=8,["イ"]=9,["ウ"]=10,["エ"]=11,["一"]=12,["二"]=13,["三"]=14,["四"]=15};local b={};local t=nil;for c in lS[${gmatchLookup}](s,"([%z\\1-\\127\\194-\\244][\\128-\\191]*)")do local v=lM[c];if v~=nil then if t==nil then t=v else lT[${insertLookup}](b,t*16+v);t=nil end end end;local r="";for i=1,#b do r=r..lS[${charLookup}]((b[i]-k)%256)end;return r end;`;
+    return `local function lIIll_10O_l(s,k)
+local lS=getfenv()[${stringLookup}]
+local lT=getfenv()[${tableLookup}]
+local lM={["⠁"]=0,["⠂"]=1,["⠃"]=2,["⠄"]=3,["⠅"]=4,["⠆"]=5,["⠇"]=6,["⠈"]=7,["ア"]=8,["イ"]=9,["ウ"]=10,["エ"]=11,["一"]=12,["二"]=13,["三"]=14,["四"]=15}
+local b={}
+local t=nil
+for c in lS[${gmatchLookup}](s,"([%z\\1-\\127\\194-\\244][\\128-\\191]*)")do local v=lM[c] if v~=nil then if t==nil then t=v else lT[${insertLookup}](b,t*16+v) t=nil end end end
+local r=""
+for i=1,#b do r=r..lS[${charLookup}]((b[i]-k)%256)end
+return r
+end
+`;
 };
 
 const createAntiTamper = () => (
@@ -859,7 +870,10 @@ const createAntiTamper = () => (
     'end lO_10O_lI() '
 );
 
-const minifyLuau = (code) => code.replace(/\s+/g, ' ').trim();
+const minifyLuau = (code) => code
+    .replace(/[ \t\r\f\v]+/g, ' ')
+    .replace(/ *\n+ */g, '\n')
+    .trim();
 
 const obfuscateAstAsync = async (source) => {
     const cleaned = preprocessLuau(source);
