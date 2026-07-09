@@ -1,16 +1,17 @@
 const express = require('express');
-const cors = require('cors'); // 1. EKLENEN SATIR: Kütüphaneyi çağırdık
+const cors = require('cors');
+const luaparse = require('luaparse');
 
 const app = express();
 
-app.use(cors()); // 2. EKLENEN SATIR: Tarayıcı engellerini kaldırdık
+app.use(cors());
 app.use(express.json());
 
-// Opaque Predicates (Kör Düğümler) Üreteci ve İsimlendiriciler
+// 1. Görsel Olarak Benzer (Look-alike) İsim Jeneratörü
 const generateLookalikeName = () => {
     const startChars = ['l', 'I', 'O', '_'];
     const bodyChars = ['l', 'I', '1', 'O', '0', '_'];
-    let len = Math.floor(Math.random() * 8) + 12; // 12 to 20 karakter uzunluğunda
+    let len = Math.floor(Math.random() * 8) + 12; // 12-20 karakter arası
     let name = startChars[Math.floor(Math.random() * startChars.length)];
     for (let i = 1; i < len; i++) {
         name += bodyChars[Math.floor(Math.random() * bodyChars.length)];
@@ -18,6 +19,7 @@ const generateLookalikeName = () => {
     return name;
 };
 
+// 2. Opaque Predicates (Kör Düğümler) Üreteci
 const generateOpaquePredicate = () => {
     const x = Math.floor(Math.random() * 50) + 5;
     const y = Math.floor(Math.random() * 50) + 5;
@@ -102,7 +104,7 @@ const insertOpaquePredicates = (code) => {
     return result.join('\n');
 };
 
-// String Şifreleme ve Decode Fonksiyonu Ekleme (Braille, Asya karakterleri ile)
+// 3. String Kodlama / Şifreleme Metotları (Base16 Unicode Eşlemeli)
 const unicodeAlphabet = ['⠁', '⠂', '⠃', '⠄', '⠅', '⠆', '⠇', '⠈', 'ア', 'イ', 'ウ', 'エ', '一', '二', '三', '四'];
 
 const encodeStringToUnicode = (str, key) => {
@@ -116,102 +118,371 @@ const encodeStringToUnicode = (str, key) => {
     return encoded;
 };
 
-const encryptStringsAndAddDecrypt = (code) => {
-    // Yorum satırlarını temizleme
-    let cleanedCode = code
-        .replace(/--\[\[[\s\S]*?\]\]/g, '')
-        .replace(/--.*$/gm, '');
-
-    // String ifadeleri yakalayan regex
-    const stringRegex = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g;
-    
-    let hasStrings = false;
-    let obfCode = cleanedCode.replace(stringRegex, (match, p1, p2) => {
-        const str = p1 !== undefined ? p1 : p2;
-        if (str.length === 0) return match;
-        
-        hasStrings = true;
-        const key = Math.floor(Math.random() * 254) + 1;
-        const encodedStr = encodeStringToUnicode(str, key);
-        return `_DECRYPT("${encodedStr}",${key})`;
-    });
-
-    if (hasStrings) {
-        // Luau için gmatch tabanlı UTF-8 decode fonksiyonu (t=nil ve for arasına boşluk eklendi)
-        const decryptFn = `local function _DECRYPT(s,k)local m={["⠁"]=0,["⠂"]=1,["⠃"]=2,["⠄"]=3,["⠅"]=4,["⠆"]=5,["⠇"]=6,["⠈"]=7,["ア"]=8,["イ"]=9,["ウ"]=10,["エ"]=11,["一"]=12,["二"]=13,["三"]=14,["四"]=15}local b={}local t=nil for c in string.gmatch(s,"([%z\\1-\\127\\194-\\244][\\128-\\191]*)")do local v=m[c]if v then if not t then t=v else table.insert(b,t*16+v)t=nil end end end local r=""for i=1,#b do r=r..string.char((b[i]-k)%256)end return r end `;
-        obfCode = decryptFn + obfCode;
+const getStringValue = (raw) => {
+    if (raw.startsWith('[[') && raw.endsWith(']]')) {
+        return raw.substring(2, raw.length - 2);
     }
-    return obfCode;
+    const content = raw.substring(1, raw.length - 1);
+    return content.replace(/\\(.)/g, (match, char) => {
+        if (char === 'n') return '\n';
+        if (char === 't') return '\t';
+        if (char === 'r') return '\r';
+        return char;
+    });
 };
 
-const renameVariables = (code) => {
-    const varSet = new Set();
-    
-    const localFuncRegex = /local\s+function\s+([a-zA-Z_]\w*)/g;
-    let match;
-    while ((match = localFuncRegex.exec(code)) !== null) {
-        varSet.add(match[1]);
+// Scope / Kapsam Çözümleyici Sınıfı
+class Scope {
+    constructor(parent = null) {
+        this.parent = parent;
+        this.bindings = {};
     }
-    
-    const funcRegex = /function\s+([a-zA-Z_]\w*)/g;
-    while ((match = funcRegex.exec(code)) !== null) {
-        varSet.add(match[1]);
+    define(name, newName) {
+        this.bindings[name] = newName;
     }
-
-    const localValRegex = /local\s+([a-zA-Z_]\w*(?:\s*,\s*[a-zA-Z_]\w*)*)/g;
-    while ((match = localValRegex.exec(code)) !== null) {
-        const vars = match[1].split(',').map(v => v.trim());
-        vars.forEach(v => {
-            if (v) varSet.add(v);
-        });
-    }
-
-    const paramRegex = /function\s+[a-zA-Z_]\w*\s*\(([^)]*)\)/g;
-    while ((match = paramRegex.exec(code)) !== null) {
-        const params = match[1].split(',').map(p => p.trim());
-        params.forEach(p => {
-            if (p && p !== '...') varSet.add(p);
-        });
-    }
-
-    if (code.includes('_DECRYPT')) {
-        varSet.add('_DECRYPT');
-    }
-
-    const keywords = new Set([
-        'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function',
-        'if', 'in', 'local', 'nil', 'not', 'or', 'repeat', 'return', 'then',
-        'true', 'until', 'while', 'math', 'string', 'table', 'print', 'pairs',
-        'ipairs', 'tostring', 'tonumber', 'next', 'select', 'warn', 'error',
-        's', 'k', 't', 'b', 'c', 'v', 'r', 'i', 'm'
-    ]);
-    
-    const varsToRename = Array.from(varSet).filter(v => !keywords.has(v));
-
-    varsToRename.sort((a, b) => b.length - a.length);
-
-    const renameMap = {};
-    const usedNames = new Set();
-
-    varsToRename.forEach(v => {
-        let lName = generateLookalikeName();
-        while (usedNames.has(lName)) {
-            lName = generateLookalikeName();
+    lookup(name) {
+        if (this.bindings[name] !== undefined) {
+            return this.bindings[name];
         }
-        usedNames.add(lName);
-        renameMap[v] = lName;
-    });
+        if (this.parent) {
+            return this.parent.lookup(name);
+        }
+        return null;
+    }
+}
 
-    let obfCode = code;
-    varsToRename.forEach(v => {
-        const reg = new RegExp('\\b' + v + '\\b', 'g');
-        obfCode = obfCode.replace(reg, renameMap[v]);
-    });
+// 4. StringLiteral ve Identifier AST Düğümleri Manipülasyonu
+const encryptStringNode = (node, state) => {
+    const rawVal = node.raw;
+    const strVal = getStringValue(rawVal);
+    if (strVal.length === 0) return;
 
-    return obfCode;
+    state.hasStrings = true;
+    const key = Math.floor(Math.random() * 254) + 1;
+    const encodedStr = encodeStringToUnicode(strVal, key);
+
+    node.type = 'CallExpression';
+    node.base = {
+        type: 'Identifier',
+        name: 'lIIll_10O_l' // Obfuscated _DECRYPT ismi
+    };
+    node.arguments = [
+        {
+            type: 'StringLiteral',
+            value: null,
+            raw: `"${encodedStr}"`
+        },
+        {
+            type: 'NumericLiteral',
+            value: key,
+            raw: String(key)
+        }
+    ];
 };
 
-// Kodları Tek Satırda Birleştirme
+const walk = (node, scope, state) => {
+    if (!node) return;
+
+    switch (node.type) {
+        case 'Chunk':
+            node.body.forEach(stmt => walk(stmt, scope, state));
+            break;
+
+        case 'LocalStatement':
+            if (node.init) {
+                node.init.forEach(expr => walk(expr, scope, state));
+            }
+            node.variables.forEach(id => {
+                const newName = generateLookalikeName();
+                scope.define(id.name, newName);
+                id.name = newName;
+            });
+            break;
+
+        case 'AssignmentStatement':
+            node.variables.forEach(expr => walk(expr, scope, state));
+            node.init.forEach(expr => walk(expr, scope, state));
+            break;
+
+        case 'CallStatement':
+            walk(node.expression, scope, state);
+            break;
+
+        case 'IfStatement':
+            node.clauses.forEach(clause => {
+                if (clause.condition) {
+                    walk(clause.condition, scope, state);
+                }
+                const clauseScope = new Scope(scope);
+                clause.body.forEach(stmt => walk(stmt, clauseScope, state));
+            });
+            break;
+
+        case 'WhileStatement':
+            walk(node.condition, scope, state);
+            const whileScope = new Scope(scope);
+            node.body.forEach(stmt => walk(stmt, whileScope, state));
+            break;
+
+        case 'RepeatStatement':
+            const repeatScope = new Scope(scope);
+            node.body.forEach(stmt => walk(stmt, repeatScope, state));
+            walk(node.condition, repeatScope, state);
+            break;
+
+        case 'ForNumericStatement':
+            walk(node.start, scope, state);
+            walk(node.end, scope, state);
+            if (node.step) walk(node.step, scope, state);
+            
+            const forNumScope = new Scope(scope);
+            const loopVarNewName = generateLookalikeName();
+            forNumScope.define(node.variable.name, loopVarNewName);
+            node.variable.name = loopVarNewName;
+            
+            node.body.forEach(stmt => walk(stmt, forNumScope, state));
+            break;
+
+        case 'ForGenericStatement':
+            node.iterators.forEach(expr => walk(expr, scope, state));
+            
+            const forGenScope = new Scope(scope);
+            node.variables.forEach(id => {
+                const newName = generateLookalikeName();
+                forGenScope.define(id.name, newName);
+                id.name = newName;
+            });
+            
+            node.body.forEach(stmt => walk(stmt, forGenScope, state));
+            break;
+
+        case 'ReturnStatement':
+            node.arguments.forEach(expr => walk(expr, scope, state));
+            break;
+
+        case 'BreakStatement':
+            break;
+
+        case 'FunctionDeclaration':
+            if (node.isLocal) {
+                const newName = generateLookalikeName();
+                scope.define(node.identifier.name, newName);
+                node.identifier.name = newName;
+            } else {
+                walk(node.identifier, scope, state);
+            }
+            
+            const funcScope = new Scope(scope);
+            node.parameters.forEach(param => {
+                if (param.type === 'Identifier') {
+                    const newName = generateLookalikeName();
+                    funcScope.define(param.name, newName);
+                    param.name = newName;
+                }
+            });
+            
+            node.body.forEach(stmt => walk(stmt, funcScope, state));
+            break;
+
+        case 'Identifier':
+            const resolved = scope.lookup(node.name);
+            if (resolved !== null) {
+                node.name = resolved;
+            }
+            break;
+
+        case 'StringLiteral':
+            encryptStringNode(node, state);
+            break;
+
+        case 'NumericLiteral':
+        case 'BooleanLiteral':
+        case 'NilLiteral':
+        case 'VarargLiteral':
+            break;
+
+        case 'TableConstructorExpression':
+            node.fields.forEach(field => walk(field, scope, state));
+            break;
+
+        case 'TableKey':
+            walk(node.key, scope, state);
+            walk(node.value, scope, state);
+            break;
+
+        case 'TableKeyString':
+            walk(node.value, scope, state);
+            break;
+
+        case 'TableValue':
+            walk(node.value, scope, state);
+            break;
+
+        case 'BinaryExpression':
+        case 'LogicalExpression':
+            walk(node.left, scope, state);
+            walk(node.right, scope, state);
+            break;
+
+        case 'UnaryExpression':
+            walk(node.argument, scope, state);
+            break;
+
+        case 'MemberExpression':
+            walk(node.base, scope, state);
+            break;
+
+        case 'IndexExpression':
+            walk(node.base, scope, state);
+            walk(node.index, scope, state);
+            break;
+
+        case 'CallExpression':
+            walk(node.base, scope, state);
+            node.arguments.forEach(arg => walk(arg, scope, state));
+            break;
+
+        case 'TableCallExpression':
+            walk(node.base, scope, state);
+            walk(node.arguments, scope, state);
+            break;
+
+        case 'StringCallExpression':
+            walk(node.base, scope, state);
+            walk(node.argument, scope, state);
+            break;
+    }
+};
+
+// 5. AST'den Lua Koduna (String) Geri Dönüşüm Jeneratörü
+const astToCode = (node) => {
+    if (!node) return '';
+
+    switch (node.type) {
+        case 'Chunk':
+            return node.body.map(astToCode).join(' ');
+
+        case 'LocalStatement': {
+            const vars = node.variables.map(astToCode).join(',');
+            if (node.init && node.init.length > 0) {
+                const inits = node.init.map(astToCode).join(',');
+                return `local ${vars}=${inits}`;
+            }
+            return `local ${vars}`;
+        }
+
+        case 'AssignmentStatement': {
+            const vars = node.variables.map(astToCode).join(',');
+            const inits = node.init.map(astToCode).join(',');
+            return `${vars}=${inits}`;
+        }
+
+        case 'CallStatement':
+            return astToCode(node.expression);
+
+        case 'IfStatement': {
+            let code = '';
+            node.clauses.forEach((clause, index) => {
+                if (clause.type === 'IfClause') {
+                    code += `if ${astToCode(clause.condition)} then ${clause.body.map(astToCode).join(' ')}`;
+                } else if (clause.type === 'ElseifClause') {
+                    code += ` elseif ${astToCode(clause.condition)} then ${clause.body.map(astToCode).join(' ')}`;
+                } else if (clause.type === 'ElseClause') {
+                    code += ` else ${clause.body.map(astToCode).join(' ')}`;
+                }
+            });
+            code += ' end';
+            return code;
+        }
+
+        case 'WhileStatement':
+            return `while ${astToCode(node.condition)} do ${node.body.map(astToCode).join(' ')} end`;
+
+        case 'RepeatStatement':
+            return `repeat ${node.body.map(astToCode).join(' ')} until ${astToCode(node.condition)}`;
+
+        case 'ForNumericStatement': {
+            const stepStr = node.step ? `,${astToCode(node.step)}` : '';
+            return `for ${astToCode(node.variable)}=${astToCode(node.start)},${astToCode(node.end)}${stepStr} do ${node.body.map(astToCode).join(' ')} end`;
+        }
+
+        case 'ForGenericStatement': {
+            const vars = node.variables.map(astToCode).join(',');
+            const iters = node.iterators.map(astToCode).join(',');
+            return `for ${vars} in ${iters} do ${node.body.map(astToCode).join(' ')} end`;
+        }
+
+        case 'ReturnStatement': {
+            const args = node.arguments.map(astToCode).join(',');
+            return `return ${args}`;
+        }
+
+        case 'BreakStatement':
+            return 'break';
+
+        case 'FunctionDeclaration': {
+            const params = node.parameters.map(astToCode).join(',');
+            const localStr = node.isLocal ? 'local ' : '';
+            return `${localStr}function ${astToCode(node.identifier)}(${params}) ${node.body.map(astToCode).join(' ')} end`;
+        }
+
+        case 'Identifier':
+            return node.name;
+
+        case 'StringLiteral':
+            return node.raw;
+
+        case 'NumericLiteral':
+            return node.raw;
+
+        case 'BooleanLiteral':
+            return node.value ? 'true' : 'false';
+
+        case 'NilLiteral':
+            return 'nil';
+
+        case 'VarargLiteral':
+            return '...';
+
+        case 'TableConstructorExpression':
+            return `{${node.fields.map(astToCode).join(',')}}`;
+
+        case 'TableKey':
+            return `[${astToCode(node.key)}]=${astToCode(node.value)}`;
+
+        case 'TableKeyString':
+            return `${astToCode(node.key)}=${astToCode(node.value)}`;
+
+        case 'TableValue':
+            return astToCode(node.value);
+
+        case 'BinaryExpression':
+        case 'LogicalExpression':
+            return `(${astToCode(node.left)}${node.operator}${astToCode(node.right)})`;
+
+        case 'UnaryExpression':
+            return `(${node.operator}${astToCode(node.argument)})`;
+
+        case 'MemberExpression':
+            return `${astToCode(node.base)}${node.indexer}${astToCode(node.identifier)}`;
+
+        case 'IndexExpression':
+            return `${astToCode(node.base)}[${astToCode(node.index)}]`;
+
+        case 'CallExpression':
+            return `${astToCode(node.base)}(${node.arguments.map(astToCode).join(',')})`;
+
+        case 'TableCallExpression':
+            return `${astToCode(node.base)}${astToCode(node.arguments)}`;
+
+        case 'StringCallExpression':
+            return `${astToCode(node.base)}${astToCode(node.argument)}`;
+
+        default:
+            return '';
+    }
+};
+
 const minifyLuau = (code) => {
     return code.replace(/\s+/g, ' ').trim();
 };
@@ -221,20 +492,49 @@ app.post('/obfuscate', (req, res) => {
     if (!code) return res.status(400).send({ error: "Kod gönder kanka!" });
 
     try {
-        // 1. Aşama: Yorum Satırlarını Sil, Stringleri Şifrele ve Decode Fonksiyonu Ekle
-        let obfCode = encryptStringsAndAddDecrypt(code);
+        // Yorum satırlarını temizleme
+        let cleanedCode = code
+            .replace(/--\[\[[\s\S]*?\]\]/g, '')
+            .replace(/--.*$/gm, '');
 
-        // 2. Aşama: Opaque Predicates (Kör Düğümler) Ekleme
-        obfCode = insertOpaquePredicates(obfCode);
+        // 1. Aşama: Lua AST Parsing
+        const ast = luaparse.parse(cleanedCode, { comments: false });
 
-        // 3. Aşama: Anti-Tamper Header (Hile/Hook Engelleyici) Ekleme
-        const antiTamper = `local function _CHECK() if not debug or type(debug) ~= "table" or not debug.info then while true do end end if debug.info(debug.info, "s") ~= "[C]" then while true do end end local function dummy() end if debug.info(dummy, "s") == "[C]" then while true do end end local list = {string.char, pcall, xpcall, unpack, setmetatable} if getfenv then table.insert(list, getfenv) end for i = 1, #list do if type(list[i]) ~= "function" or debug.info(list[i], "s") ~= "[C]" then while true do end end end end _CHECK() `;
+        // Global scope'u oluştur
+        const globalScope = new Scope();
+        const keywords = [
+            'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function',
+            'if', 'in', 'local', 'nil', 'not', 'or', 'repeat', 'return', 'then',
+            'true', 'until', 'while', 'math', 'string', 'table', 'print', 'pairs',
+            'ipairs', 'tostring', 'tonumber', 'next', 'select', 'warn', 'error',
+            'workspace', 'game', 'script', 'Instance', 'Vector3', 'Color3', 'CFrame',
+            's', 'k', 't', 'b', 'c', 'v', 'r', 'i', 'm', 'lIIll_10O_l', 'lO_10O_lI'
+        ];
+        keywords.forEach(k => globalScope.define(k, k));
+
+        // State nesnesi (string şifrelenip şifrelenmediğini izler)
+        const state = { hasStrings: false };
+
+        // 2. Aşama: AST Gezme, String Şifreleme ve Değişken İsim Bozma
+        walk(ast, globalScope, state);
+
+        // 3. Aşama: AST'den Lua Koduna Geri Dönüş
+        let obfCode = astToCode(ast);
+
+        // 4. Aşama: Şifre Çözücü Enjeksiyonu (sadece string varsa)
+        if (state.hasStrings) {
+            const decryptFn = `local function lIIll_10O_l(s,k)local lI_m={["⠁"]=0,["⠂"]=1,["⠃"]=2,["⠄"]=3,["⠅"]=4,["⠆"]=5,["⠇"]=6,["⠈"]=7,["ア"]=8,["イ"]=9,["ウ"]=10,["エ"]=11,["一"]=12,["二"]=13,["三"]=14,["四"]=15}local lI_b={}local lI_t=nil for lI_c in string.gmatch(s,"([%z\\1-\\127\\194-\\244][\\128-\\191]*)")do local lI_v=lI_m[lI_c]if lI_v then if not lI_t then lI_t=lI_v else table.insert(lI_b,lI_t*16+lI_v)lI_t=nil end end end local lI_r=""for lI_i=1,#lI_b do lI_r=lI_r..string.char((lI_b[lI_i]-k)%256)end return lI_r end `;
+            obfCode = decryptFn + obfCode;
+        }
+
+        // 5. Aşama: Anti-Tamper Header Enjeksiyonu
+        const antiTamper = `local function lO_10O_lI() if not debug or type(debug) ~= "table" or not debug.info then while true do end end if debug.info(debug.info, "s") ~= "[C]" then while true do end end local function lI_dummy() end if debug.info(lI_dummy, "s") == "[C]" then while true do end end local lI_list = {string.char, pcall, xpcall, unpack, setmetatable} if getfenv then table.insert(lI_list, getfenv) end for lI_i = 1, #lI_list do if type(lI_list[lI_i]) ~= "function" or debug.info(lI_list[lI_i], "s") ~= "[C]" then while true do end end end end lO_10O_lI() `;
         obfCode = antiTamper + obfCode;
 
-        // 4. Aşama: Değişken ve Fonksiyon İsimlerini Unicode Karakterlerle Değiştir
-        obfCode = renameVariables(obfCode);
+        // 6. Aşama: Opaque Predicates (Kör Düğümler) Ekleme
+        obfCode = insertOpaquePredicates(obfCode);
 
-        // 5. Aşama: Kodları Sıkıştır ve Birleştir (Tek Satır/Düzen Gözetmeksizin)
+        // 7. Aşama: Minification (Düzen Gözetmeksizin Tek Satır)
         obfCode = minifyLuau(obfCode);
 
         res.json({
