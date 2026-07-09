@@ -137,8 +137,8 @@ const encryptStringsAndAddDecrypt = (code) => {
     });
 
     if (hasStrings) {
-        // Luau için gmatch tabanlı UTF-8 decode fonksiyonu
-        const decryptFn = `local function _DECRYPT(s,k)local m={["⠁"]=0,["⠂"]=1,["⠃"]=2,["⠄"]=3,["⠅"]=4,["⠆"]=5,["⠇"]=6,["⠈"]=7,["ア"]=8,["イ"]=9,["ウ"]=10,["エ"]=11,["一"]=12,["二"]=13,["三"]=14,["四"]=15}local b={}local t=nilfor c in string.gmatch(s,"([%z\\1-\\127\\194-\\244][\\128-\\191]*)")do local v=m[c]if v then if not t then t=v else table.insert(b,t*16+v)t=nil end end end local r=""for i=1,#b do r=r..string.char((b[i]-k)%256)end return r end `;
+        // Luau için gmatch tabanlı UTF-8 decode fonksiyonu (t=nil ve for arasına boşluk eklendi)
+        const decryptFn = `local function _DECRYPT(s,k)local m={["⠁"]=0,["⠂"]=1,["⠃"]=2,["⠄"]=3,["⠅"]=4,["⠆"]=5,["⠇"]=6,["⠈"]=7,["ア"]=8,["イ"]=9,["ウ"]=10,["エ"]=11,["一"]=12,["二"]=13,["三"]=14,["四"]=15}local b={}local t=nil for c in string.gmatch(s,"([%z\\1-\\127\\194-\\244][\\128-\\191]*)")do local v=m[c]if v then if not t then t=v else table.insert(b,t*16+v)t=nil end end end local r=""for i=1,#b do r=r..string.char((b[i]-k)%256)end return r end `;
         obfCode = decryptFn + obfCode;
     }
     return obfCode;
@@ -182,7 +182,8 @@ const renameVariables = (code) => {
         'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function',
         'if', 'in', 'local', 'nil', 'not', 'or', 'repeat', 'return', 'then',
         'true', 'until', 'while', 'math', 'string', 'table', 'print', 'pairs',
-        'ipairs', 'tostring', 'tonumber', 'next', 'select', 'warn', 'error'
+        'ipairs', 'tostring', 'tonumber', 'next', 'select', 'warn', 'error',
+        's', 'k', 't', 'b', 'c', 'v', 'r', 'i', 'm'
     ]);
     
     const varsToRename = Array.from(varSet).filter(v => !keywords.has(v));
