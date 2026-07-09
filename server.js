@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const luaparse = require('luaparse');
+const { preprocessLuau } = require('./luauPreprocessor');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -420,7 +421,7 @@ const convertCompoundAssignments = (code) => {
     });
 };
 
-const preprocessLuau = (code) => {
+const legacyPreprocessLuau = (code) => {
     let out = stripComments(code);
     out = convertAllInterpolatedStrings(out);
     out = stripLuauGenerics(out);
