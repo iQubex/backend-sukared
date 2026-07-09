@@ -292,7 +292,9 @@ const walk = (node, scope, state) => {
             break;
 
         case 'FunctionDeclaration':
-            if (node.isLocal) {
+            if (!node.identifier) {
+                // Anonymous function expression: local f = function(...) ... end
+            } else if (node.isLocal) {
                 const newName = generateLookalikeName();
                 scope.define(node.identifier.name, newName);
                 node.identifier.name = newName;
@@ -386,7 +388,7 @@ const walk = (node, scope, state) => {
             break;
 
         case 'CallExpression':
-            if (node.base.type === 'MemberExpression' && node.base.indexer === ':') {
+            if (node.base && node.base.type === 'MemberExpression' && node.base.indexer === ':') {
                 const methodObj = node.base.base;
                 const methodName = node.base.identifier.name;
 
@@ -428,6 +430,11 @@ const walk = (node, scope, state) => {
 // 5. AST'den Lua Koduna (String) Geri Dönüşüm Jeneratörü (Düzeltilmiş Boşluk Kuralları ile)
 const astToCode = (node) => {
     if (!node) return '';
+
+    const callableBaseToCode = (baseNode) => {
+        const code = astToCode(baseNode);
+        return baseNode && baseNode.type === 'FunctionDeclaration' ? `(${code})` : code;
+    };
 
     switch (node.type) {
         case 'Chunk':
@@ -493,6 +500,9 @@ const astToCode = (node) => {
 
         case 'FunctionDeclaration': {
             const params = node.parameters.map(astToCode);
+            if (!node.identifier) {
+                return `function(${params.join(',')}) ${node.body.map(astToCode).join(' ')} end`;
+            }
             if (node.isLocal) {
                 return `local function ${astToCode(node.identifier)}(${params.join(',')}) ${node.body.map(astToCode).join(' ')} end`;
             }
@@ -551,13 +561,13 @@ const astToCode = (node) => {
             return `${astToCode(node.base)}[${astToCode(node.index)}]`;
 
         case 'CallExpression':
-            return `${astToCode(node.base)}(${node.arguments.map(astToCode).join(',')})`;
+            return `${callableBaseToCode(node.base)}(${node.arguments.map(astToCode).join(',')})`;
 
         case 'TableCallExpression':
-            return `${astToCode(node.base)}${astToCode(node.arguments)}`;
+            return `${callableBaseToCode(node.base)}${astToCode(node.arguments)}`;
 
         case 'StringCallExpression':
-            return `${astToCode(node.base)}${astToCode(node.argument)}`;
+            return `${callableBaseToCode(node.base)}${astToCode(node.argument)}`;
 
         default:
             return '';
