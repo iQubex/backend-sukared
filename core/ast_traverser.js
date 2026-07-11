@@ -58,34 +58,66 @@ const randomName = () => {
     return value;
 };
 
+const choice = (items) => items[Math.floor(Math.random() * items.length)];
+
 const luaDecimalString = (value) => `"${[...String(value)].map(char => `\\${char.charCodeAt(0)}`).join('')}"`;
 
 const luaUtf8String = (value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
 const createCipherSession = (options = {}) => {
     const alphabet = options.digitFree ? selectSymbolByteAlphabet(16) : selectCipherAlphabet(16);
-    const key = Math.floor(Math.random() * 254) + 1;
-    return { alphabet, key, digitFree: options.digitFree === true };
+    const families = options.decoderFamilies && options.decoderFamilies.length ? options.decoderFamilies : ['shift', 'reverseShift', 'bytes'];
+    const decoders = {
+        shift: randomName(),
+        reverseShift: randomName()
+    };
+    return {
+        alphabet,
+        families,
+        decoders,
+        digitFree: options.digitFree === true,
+        hideNumbers: options.hideNumbers === true || options.digitFree === true,
+        inlineStringRate: typeof options.inlineStringRate === 'number' ? options.inlineStringRate : 0.25
+    };
 };
 
-const encodeWithSession = (session, value) => {
+const encodeWithKey = (session, value, key, reverse = false) => {
     let encoded = '';
     const bytes = Buffer.from(String(value), 'utf8');
     for (let i = 0; i < bytes.length; i++) {
-        const byte = (bytes[i] + session.key + (i % 17)) % 256;
+        const byte = (bytes[i] + key + (i % 17)) % 256;
         encoded += session.alphabet[(byte >> 4) & 15] + session.alphabet[byte & 15];
     }
-    return encoded;
+    return reverse ? [...encoded].reverse().join('') : encoded;
+};
+
+const numCode = (state, value) => (state.digitFree || state.hideNumbers ? numberExpression(value) : String(value));
+
+const rawExpression = (raw) => ({ type: 'RawExpression', raw });
+
+const createInlineBytesExpression = (state, value, key) => {
+    const bytes = Buffer.from(String(value), 'utf8');
+    const values = [];
+    for (let i = 0; i < bytes.length; i++) values.push(`(${numCode(state, (bytes[i] + key + ((i * 7) % 19)) % 256)}-${numCode(state, key)}-${numCode(state, (i * 7) % 19)})%${numCode(state, 256)}`);
+    const s = randomName();
+    return rawExpression(`(function() local ${s}=getfenv()[${luaUtf8String('string')}] return ${s}[${luaUtf8String('char')}](${values.join(',')}) end)()`);
 };
 
 const createDecoderCall = (state, value) => {
     state.hasEncryptedStrings = true;
+    const family = choice(state.cipher.families);
+    const key = Math.floor(Math.random() * 231) + 17;
+    if ((family === 'bytes' || family === 'closure') && Math.random() < state.cipher.inlineStringRate) {
+        return createInlineBytesExpression(state, value, key);
+    }
+    const reverse = family === 'reverseShift';
+    const decoderName = reverse ? state.cipher.decoders.reverseShift : state.cipher.decoders.shift;
     return {
         type: 'CallExpression',
-        base: { type: 'Identifier', name: DECODER_NAME },
+        base: { type: 'Identifier', name: decoderName },
         arguments: [
-            { type: 'StringLiteral', value: null, raw: luaUtf8String(encodeWithSession(state.cipher, value)) },
-            { type: 'NumericLiteral', value: state.cipher.key, raw: state.digitFree ? numberExpression(state.cipher.key) : String(state.cipher.key) }
+            { type: 'StringLiteral', value: null, raw: luaUtf8String(encodeWithKey(state.cipher, value, key, reverse)) },
+            { type: 'RawExpression', raw: numCode(state, key) }
         ]
     };
 };
@@ -110,18 +142,23 @@ const createDecoderRuntime = (session) => {
     const concatLookup = session.digitFree ? luaUtf8String('concat') : luaDecimalString('concat');
     const pattern = session.digitFree ? luaUtf8String('.') : luaDecimalString('([%z\\1-\\127\\194-\\244][\\128-\\191]*)');
 
-    const body = [
+    const makeBody = (reverse) => [
         `local _S=getfenv()[${stringLookup}]`,
         `local _T=getfenv()[${tableLookup}]`,
         `local _M=${map}`,
         'local _O={}',
         'local _H=nil',
         `local _I=${n(1)}`,
-        `for _C in _S[${gmatchLookup}](s,${pattern})do local _V=_M[_C];if _V~=nil then if _H==nil then _H=_V else local _B=_H*${n(16)}+_V;_O[_I]=_S[${charLookup}]((_B-k-((_I-${n(1)})%${n(17)}))%${n(256)});_I=_I+${n(1)};_H=nil end end end`,
+        reverse
+            ? `for _P=#s,${n(1)},-${n(1)} do local _C=_S[${luaUtf8String('sub')}](s,_P,_P);local _V=_M[_C];if _V~=nil then if _H==nil then _H=_V else local _B=_H*${n(16)}+_V;_O[_I]=_S[${charLookup}]((_B-k-((_I-${n(1)})%${n(17)}))%${n(256)});_I=_I+${n(1)};_H=nil end end end`
+            : `for _C in _S[${gmatchLookup}](s,${pattern})do local _V=_M[_C];if _V~=nil then if _H==nil then _H=_V else local _B=_H*${n(16)}+_V;_O[_I]=_S[${charLookup}]((_B-k-((_I-${n(1)})%${n(17)}))%${n(256)});_I=_I+${n(1)};_H=nil end end end`,
         `return _T[${concatLookup}](_O)`
     ].join(';');
 
-    return `local function ${DECODER_NAME}(s,k) ${body} end`;
+    return shuffle([
+        `local function ${session.decoders.shift}(s,k) ${makeBody(false)} end`,
+        `local function ${session.decoders.reverseShift}(s,k) ${makeBody(true)} end`
+    ]).join(';');
 };
 
 const createRootScope = () => {
@@ -301,7 +338,7 @@ const walkAst = async (root, state) => {
                 encryptStringNode(node, state);
                 break;
             case 'NumericLiteral':
-                if (state.digitFree && Number.isFinite(Number(node.value))) {
+                if ((state.digitFree || state.hideNumbers) && Number.isFinite(Number(node.value))) {
                     node.raw = numberExpression(node.value);
                 }
                 break;
@@ -357,6 +394,24 @@ const walkAst = async (root, state) => {
 
 const joinStatements = (nodes) => (nodes || []).map(astToCode).filter(Boolean).join(';');
 
+const randomStateValue = () => Math.floor(Math.random() * 800000) + 10000;
+
+const canFlattenStatements = (nodes) => Array.isArray(nodes)
+    && nodes.length > 2
+    && !nodes.some(node => node && ['ReturnStatement', 'BreakStatement', 'FunctionDeclaration'].includes(node.type));
+
+const flattenStatements = (nodes) => {
+    const states = nodes.map(() => randomStateValue());
+    const exitState = randomStateValue();
+    const stateName = randomName();
+    const s = (value) => numberExpression(value);
+    const clauses = nodes.map((node, index) => {
+        const next = index === nodes.length - 1 ? exitState : states[index + 1];
+        return `${index === 0 ? 'if' : 'elseif'} ${stateName}==${s(states[index])} then ${astToCode(node)};${stateName}=${s(next)}`;
+    });
+    return `do local ${stateName}=${s(states[0])};while true do ${clauses.join(' ')} else break end end end`;
+};
+
 const astToCode = (node) => {
     if (!node) return '';
     const baseToCode = (base) => {
@@ -366,6 +421,7 @@ const astToCode = (node) => {
 
     switch (node.type) {
         case 'Chunk':
+            if (node.flattened && canFlattenStatements(node.body)) return flattenStatements(node.body);
             return joinStatements(node.body);
         case 'LocalStatement': {
             const vars = (node.variables || []).map(astToCode).join(',');
@@ -411,6 +467,8 @@ const astToCode = (node) => {
         }
         case 'Identifier':
             return node.name;
+        case 'RawExpression':
+            return node.raw;
         case 'StringLiteral':
             return node.raw || luaUtf8String(String(node.value || ''));
         case 'NumericLiteral':
@@ -463,10 +521,18 @@ const transformAst = async (code, options = {}) => {
     const state = {
         hasEncryptedStrings: false,
         digitFree: options.digitFree === true,
-        cipher: createCipherSession({ digitFree: options.digitFree === true })
+        hideNumbers: options.hideNumbers === true,
+        flattenRate: typeof options.flattenRate === 'number' ? options.flattenRate : 0,
+        cipher: createCipherSession({
+            digitFree: options.digitFree === true,
+            hideNumbers: options.hideNumbers === true,
+            decoderFamilies: options.decoderFamilies,
+            inlineStringRate: options.inlineStringRate
+        })
     };
     const ast = parse(code);
     await walkAst(ast, state);
+    if (Math.random() < state.flattenRate) ast.flattened = true;
     let output = minifyLuauSafe(astToCode(ast));
     if (state.hasEncryptedStrings) {
         output = minifyLuauSafe(`${createDecoderRuntime(state.cipher)};${output}`);

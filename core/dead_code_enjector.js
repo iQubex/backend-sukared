@@ -61,6 +61,13 @@ const makeWatermarkBlock = (options = {}) => {
     ].join(' ');
 };
 
+const makeFingerprintBlock = (fingerprint) => {
+    if (!fingerprint) return '';
+    const f = randomName();
+    const guard = randomName();
+    return `do local ${f}="${String(fingerprint).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" local ${guard}=#${f} if ${guard}<0 then print(${f}) end end`;
+};
+
 const makeOpaqueBlock = (options = {}) => {
     const a = randomName();
     const b = randomName();
@@ -93,6 +100,7 @@ const injectDeadCode = async (code, options = {}) => {
     let inserted = 0;
 
     output.push(makeWatermarkBlock(options));
+    if (options.fingerprint && !options.digitFree) output.push(makeFingerprintBlock(options.fingerprint));
 
     for (let index = 0; index < lines.length; index++) {
         output.push(lines[index]);

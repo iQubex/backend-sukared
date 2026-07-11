@@ -7,6 +7,7 @@ const { transformAst } = require('./core/ast_traverser');
 const { attachDecoderRuntime } = require('./utils/braille_cipher');
 const { createVmBundle } = require('./vmEngine');
 const { KNOWN_GLOBALS, LUA_KEYWORDS } = require('./utils/luau_terms');
+const { createBuildConfig, PROFILES } = require('./core/build_config');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,16 +30,22 @@ const getErrorContext = (code, err) => {
 };
 
 const obfuscate = async (source, options = {}) => {
+    const build = createBuildConfig(options);
     const preprocessed = await preprocess(source);
     const withDeadCode = await injectDeadCode(preprocessed, {
-        probability: options.deadCodeProbability,
-        digitFree: options.digitFree === true
+        probability: build.deadCodeProbability,
+        digitFree: build.digitFree,
+        fingerprint: build.fingerprint
     });
     const transformed = await transformAst(withDeadCode, {
-        digitFree: options.digitFree === true
+        digitFree: build.digitFree,
+        hideNumbers: build.hideNumbers,
+        decoderFamilies: build.decoderFamilies,
+        inlineStringRate: build.inlineStringRate,
+        flattenRate: build.flattenRate
     });
     const obfuscated = attachDecoderRuntime(transformed.code, transformed.hasEncryptedStrings);
-    return options.useVm ? createVmBundle(obfuscated, { digitFree: options.digitFree === true }) : obfuscated;
+    return build.useVm ? createVmBundle(obfuscated, { digitFree: build.digitFree, integrity: build.integrity }) : obfuscated;
 };
 
 app.post('/obfuscate', async (req, res) => {
@@ -49,7 +56,9 @@ app.post('/obfuscate', async (req, res) => {
         const obfuscated = await obfuscate(String(code), {
             deadCodeProbability: req.body.deadCodeProbability,
             useVm: req.body.useVm === true || req.body.vm === true || req.body.mode === 'vm',
-            digitFree: req.body.digitFree === true || req.body.mode === 'digit-free'
+            digitFree: req.body.digitFree === true || req.body.mode === 'digit-free',
+            profile: req.body.profile || req.body.mode,
+            version: req.body.version
         });
 
         res.json({
@@ -70,6 +79,7 @@ app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
         modules: ['preprocessor', 'dead_code_enjector', 'ast_traverser', 'braille_cipher', 'alphabet_registry', 'vmEngine'],
+        profiles: Object.keys(PROFILES),
         luau_terms: {
             keywords: LUA_KEYWORDS.size,
             globals: KNOWN_GLOBALS.size
