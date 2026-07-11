@@ -25,10 +25,14 @@ const VM_ALPHABET_CHARS = [
     '\u2234', '\u2235', '\u22C7', '\u22CB', '\u22D4', '\u22EE', '\u29C9', '\u29CA'
 ];
 
+const SYMBOL_BYTE_ALPHABET = ['!', '$', '%', '&', '(', ')', '*', '+', ',', '-', '.', '/', ':', ';', '<', '>', '?', '@', '[', ']', '^', '_', '{', '|', '}', '~'];
+
 const selectCipherAlphabet = (size = 16) => {
     const pool = ALPHABET_POOLS[Math.floor(Math.random() * ALPHABET_POOLS.length)];
     return shuffle(pool).slice(0, size);
 };
+
+const selectSymbolByteAlphabet = (size = 16) => shuffle(SYMBOL_BYTE_ALPHABET).slice(0, size);
 
 const selectVmAlphabet = (size = 64) => shuffle(VM_ALPHABET_CHARS).slice(0, size).join('');
 
@@ -37,6 +41,7 @@ const makeDecoyAlphabet = (size = 64) => shuffle(ALPHABET_POOLS.flat()).slice(0,
 module.exports = {
     ALPHABET_POOLS,
     selectCipherAlphabet,
+    selectSymbolByteAlphabet,
     selectVmAlphabet,
     makeDecoyAlphabet,
     shuffle

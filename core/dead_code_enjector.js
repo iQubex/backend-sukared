@@ -5,6 +5,12 @@ const WATERMARKS = [
     'SukaRed v1.0 owns you'
 ];
 
+const DIGIT_FREE_WATERMARKS = [
+    'Obfuscated By Sukared',
+    'Dont try its very hard',
+    'SukaRed owns you'
+];
+
 const randomName = () => {
     const chars = ['l', 'I', 'O', '_', '0', '1'];
     let value = '_';
@@ -36,8 +42,9 @@ const canInsertBetween = (line, nextLine) => {
     return true;
 };
 
-const makeWatermarkBlock = () => {
-    const watermark = WATERMARKS[randomInt(0, WATERMARKS.length - 1)];
+const makeWatermarkBlock = (options = {}) => {
+    const pool = options.digitFree ? DIGIT_FREE_WATERMARKS : WATERMARKS;
+    const watermark = pool[randomInt(0, pool.length - 1)];
     const w = randomName();
     const acc = randomName();
     const i = randomName();
@@ -54,7 +61,7 @@ const makeWatermarkBlock = () => {
     ].join(' ');
 };
 
-const makeOpaqueBlock = () => {
+const makeOpaqueBlock = (options = {}) => {
     const a = randomName();
     const b = randomName();
     const i = randomName();
@@ -71,7 +78,8 @@ const makeOpaqueBlock = () => {
     }
 
     if (mode === 2) {
-        const watermark = WATERMARKS[randomInt(0, WATERMARKS.length - 1)];
+        const pool = options.digitFree ? DIGIT_FREE_WATERMARKS : WATERMARKS;
+        const watermark = pool[randomInt(0, pool.length - 1)];
         return `do local ${a}="${watermark}" if (#${a}<0) then error(${a}) end end`;
     }
 
@@ -84,24 +92,25 @@ const injectDeadCode = async (code, options = {}) => {
     const output = [];
     let inserted = 0;
 
-    output.push(makeWatermarkBlock());
+    output.push(makeWatermarkBlock(options));
 
     for (let index = 0; index < lines.length; index++) {
         output.push(lines[index]);
         if (inserted < MAX_INSERTIONS && canInsertBetween(lines[index], lines[index + 1]) && Math.random() < probability) {
-            output.push(inserted % 3 === 0 ? makeWatermarkBlock() : makeOpaqueBlock());
+            output.push(inserted % 3 === 0 ? makeWatermarkBlock(options) : makeOpaqueBlock(options));
             inserted++;
         }
         if (index % 750 === 0) await new Promise(resolve => setImmediate(resolve));
     }
 
     if (!isTerminatingStatement([...lines].reverse().find(line => line.trim()) || '')) {
-        output.push(makeWatermarkBlock());
+        output.push(makeWatermarkBlock(options));
     }
     return output.join('\n');
 };
 
 module.exports = {
     injectDeadCode,
-    WATERMARKS
+    WATERMARKS,
+    DIGIT_FREE_WATERMARKS
 };

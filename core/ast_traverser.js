@@ -1,10 +1,12 @@
 const luaparse = require('luaparse');
 const { parseLuaString } = require('./preprocessor');
 const { minifyLuau: minifyLuauSafe } = require('./luau_minifier');
-const { selectCipherAlphabet } = require('../utils/alphabet_registry');
+const { selectCipherAlphabet, selectSymbolByteAlphabet } = require('../utils/alphabet_registry');
+const { numberExpression } = require('../utils/numeric_encoder');
 
 const YIELD_EVERY_NODES = 1500;
-const runtimeNames = new Set(['getfenv', 'lIIll_10O_l']);
+const DECODER_NAME = 'lIIll_IOO_l';
+const runtimeNames = new Set(['getfenv', DECODER_NAME]);
 const plainWatermarks = new Set([
     'Obfuscated By Sukared',
     'Dont try its very hard',
@@ -50,7 +52,7 @@ const shuffle = (items) => {
 };
 
 const randomName = () => {
-    const chars = ['l', 'I', 'O', '_', '0', '1'];
+    const chars = ['l', 'I', 'O', '_'];
     let value = '_';
     for (let i = 0; i < 18; i++) value += chars[Math.floor(Math.random() * chars.length)];
     return value;
@@ -60,10 +62,10 @@ const luaDecimalString = (value) => `"${[...String(value)].map(char => `\\${char
 
 const luaUtf8String = (value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
-const createCipherSession = () => {
-    const alphabet = selectCipherAlphabet(16);
+const createCipherSession = (options = {}) => {
+    const alphabet = options.digitFree ? selectSymbolByteAlphabet(16) : selectCipherAlphabet(16);
     const key = Math.floor(Math.random() * 254) + 1;
-    return { alphabet, key };
+    return { alphabet, key, digitFree: options.digitFree === true };
 };
 
 const encodeWithSession = (session, value) => {
@@ -80,10 +82,10 @@ const createDecoderCall = (state, value) => {
     state.hasEncryptedStrings = true;
     return {
         type: 'CallExpression',
-        base: { type: 'Identifier', name: 'lIIll_10O_l' },
+        base: { type: 'Identifier', name: DECODER_NAME },
         arguments: [
             { type: 'StringLiteral', value: null, raw: luaUtf8String(encodeWithSession(state.cipher, value)) },
-            { type: 'NumericLiteral', value: state.cipher.key, raw: String(state.cipher.key) }
+            { type: 'NumericLiteral', value: state.cipher.key, raw: state.digitFree ? numberExpression(state.cipher.key) : String(state.cipher.key) }
         ]
     };
 };
@@ -99,13 +101,14 @@ const createGetfenvLookup = (state, name) => ({
 });
 
 const createDecoderRuntime = (session) => {
-    const map = `{${session.alphabet.map((glyph, index) => `[${luaUtf8String(glyph)}]=${index}`).join(',')}}`;
-    const stringLookup = luaDecimalString('string');
-    const tableLookup = luaDecimalString('table');
-    const gmatchLookup = luaDecimalString('gmatch');
-    const charLookup = luaDecimalString('char');
-    const concatLookup = luaDecimalString('concat');
-    const utf8Pattern = luaDecimalString('([%z\\1-\\127\\194-\\244][\\128-\\191]*)');
+    const n = (value) => session.digitFree ? numberExpression(value) : String(value);
+    const map = `{${session.alphabet.map((glyph, index) => `[${luaUtf8String(glyph)}]=${n(index)}`).join(',')}}`;
+    const stringLookup = session.digitFree ? luaUtf8String('string') : luaDecimalString('string');
+    const tableLookup = session.digitFree ? luaUtf8String('table') : luaDecimalString('table');
+    const gmatchLookup = session.digitFree ? luaUtf8String('gmatch') : luaDecimalString('gmatch');
+    const charLookup = session.digitFree ? luaUtf8String('char') : luaDecimalString('char');
+    const concatLookup = session.digitFree ? luaUtf8String('concat') : luaDecimalString('concat');
+    const pattern = session.digitFree ? luaUtf8String('.') : luaDecimalString('([%z\\1-\\127\\194-\\244][\\128-\\191]*)');
 
     const body = [
         `local _S=getfenv()[${stringLookup}]`,
@@ -113,12 +116,12 @@ const createDecoderRuntime = (session) => {
         `local _M=${map}`,
         'local _O={}',
         'local _H=nil',
-        'local _I=1',
-        `for _C in _S[${gmatchLookup}](s,${utf8Pattern})do local _V=_M[_C];if _V~=nil then if _H==nil then _H=_V else local _B=_H*16+_V;_O[_I]=_S[${charLookup}]((_B-k-((_I-1)%17))%256);_I=_I+1;_H=nil end end end`,
+        `local _I=${n(1)}`,
+        `for _C in _S[${gmatchLookup}](s,${pattern})do local _V=_M[_C];if _V~=nil then if _H==nil then _H=_V else local _B=_H*${n(16)}+_V;_O[_I]=_S[${charLookup}]((_B-k-((_I-${n(1)})%${n(17)}))%${n(256)});_I=_I+${n(1)};_H=nil end end end`,
         `return _T[${concatLookup}](_O)`
     ].join(';');
 
-    return `local function lIIll_10O_l(s,k) ${body} end`;
+    return `local function ${DECODER_NAME}(s,k) ${body} end`;
 };
 
 const createRootScope = () => {
@@ -297,6 +300,11 @@ const walkAst = async (root, state) => {
             case 'StringLiteral':
                 encryptStringNode(node, state);
                 break;
+            case 'NumericLiteral':
+                if (state.digitFree && Number.isFinite(Number(node.value))) {
+                    node.raw = numberExpression(node.value);
+                }
+                break;
             case 'TableConstructorExpression':
                 pushArray(stack, node.fields, scope);
                 break;
@@ -451,10 +459,11 @@ const minifyLuau = (code) => String(code || '')
     .replace(/\s+/g, ' ')
     .trim();
 
-const transformAst = async (code) => {
+const transformAst = async (code, options = {}) => {
     const state = {
         hasEncryptedStrings: false,
-        cipher: createCipherSession()
+        digitFree: options.digitFree === true,
+        cipher: createCipherSession({ digitFree: options.digitFree === true })
     };
     const ast = parse(code);
     await walkAst(ast, state);

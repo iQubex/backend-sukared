@@ -1,5 +1,7 @@
 const isIdentPart = (char) => /[A-Za-z0-9_]/.test(char || '');
 
+const startsKeywordAfterExpression = (source, index) => /^(and|or|then|do|else|elseif|end|until|in|return|local|function|while|if|for|repeat|not)\b/.test(source.slice(index));
+
 const readQuoted = (code, index) => {
     const quote = code[index];
     let out = quote;
@@ -29,6 +31,7 @@ const readLongBracket = (code, index) => {
 const shouldKeepSpace = (left, right) => {
     if (!left || !right) return false;
     if (isIdentPart(left) && isIdentPart(right)) return true;
+    if ('+-*/%^'.includes(left) && right === '#') return true;
     if ((left === '.' && right === '.') || (left === '-' && right === '-')) return true;
     return false;
 };
@@ -59,7 +62,7 @@ const minifyLuau = (code) => {
         if (/\s/.test(char)) {
             let end = i + 1;
             while (/\s/.test(source[end] || '')) end++;
-            if (shouldKeepSpace(out[out.length - 1], source[end])) out += ' ';
+            if (shouldKeepSpace(out[out.length - 1], source[end]) || startsKeywordAfterExpression(source, end)) out += ' ';
             i = end;
             continue;
         }

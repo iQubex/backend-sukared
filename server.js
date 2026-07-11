@@ -31,11 +31,14 @@ const getErrorContext = (code, err) => {
 const obfuscate = async (source, options = {}) => {
     const preprocessed = await preprocess(source);
     const withDeadCode = await injectDeadCode(preprocessed, {
-        probability: options.deadCodeProbability
+        probability: options.deadCodeProbability,
+        digitFree: options.digitFree === true
     });
-    const transformed = await transformAst(withDeadCode);
+    const transformed = await transformAst(withDeadCode, {
+        digitFree: options.digitFree === true
+    });
     const obfuscated = attachDecoderRuntime(transformed.code, transformed.hasEncryptedStrings);
-    return options.useVm ? createVmBundle(obfuscated) : obfuscated;
+    return options.useVm ? createVmBundle(obfuscated, { digitFree: options.digitFree === true }) : obfuscated;
 };
 
 app.post('/obfuscate', async (req, res) => {
@@ -45,7 +48,8 @@ app.post('/obfuscate', async (req, res) => {
     try {
         const obfuscated = await obfuscate(String(code), {
             deadCodeProbability: req.body.deadCodeProbability,
-            useVm: req.body.useVm === true || req.body.vm === true || req.body.mode === 'vm'
+            useVm: req.body.useVm === true || req.body.vm === true || req.body.mode === 'vm',
+            digitFree: req.body.digitFree === true || req.body.mode === 'digit-free'
         });
 
         res.json({
