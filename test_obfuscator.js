@@ -37,6 +37,22 @@ local value =
 print(value)
 `;
 
+const methodSelfRegression = `
+local T = {}
+
+function T:Inc()
+    self.v = self.v + 1
+end
+
+local t = { v = 1 }
+setmetatable(t, { __index = T })
+
+t:Inc()
+
+assert(t.v == 2)
+print(t.v)
+`;
+
 const JAPANESE_ALPHABET = ['ア', 'イ', 'ウ', 'エ', 'オ', 'カ', 'キ', 'ク', 'ケ', 'コ', 'サ', 'シ', 'ス', 'セ', 'ソ', 'タ'];
 
 const parseLuau = (code) => luaparse.parse(code, { comments: false, luaVersion: '5.2' });
@@ -102,6 +118,24 @@ const run = async () => {
     assert(!/#"[\u2800-\u28FF]+"/.test(digitFree), 'digit-free number encoding used Braille/Unicode length');
     parseLuau(digitFree);
     assert.strictEqual(await runLuau(digitFree, { chunk: 'digit-free' }), expected, 'digit-free runtime output mismatch');
+
+    const methodExpected = await runLuau(methodSelfRegression, { chunk: 'method-original' });
+    assert.strictEqual(methodExpected, '2');
+    for (const options of [
+        { profile: 'light', devMode: true },
+        { profile: 'balanced', devMode: true },
+        { profile: 'strong', devMode: true },
+        { profile: 'strong', useVm: true, devMode: true },
+        { profile: 'strong', useVm: true, digitFree: true, devMode: true }
+    ]) {
+        const code = await obfuscate(methodSelfRegression, options);
+        parseLuau(code);
+        assert.strictEqual(
+            await runLuau(code, { chunk: `method-${JSON.stringify(options)}` }),
+            methodExpected,
+            `method self regression failed for ${JSON.stringify(options)}`
+        );
+    }
 
     const reverseUnicode = await transformAst(await preprocess(sample), {
         decoderFamilies: ['reverseShift'],

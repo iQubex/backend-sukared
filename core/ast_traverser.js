@@ -354,6 +354,9 @@ const walkAst = async (root, state) => {
                     }
                 }
                 const fnScope = new Scope(scope);
+                if (node.implicitSelf) {
+                    fnScope.define('self', 'self');
+                }
                 for (const param of node.parameters || []) {
                     if (param && param.type === 'Identifier') {
                         const renamed = randomName();
