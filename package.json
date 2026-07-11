@@ -13,6 +13,9 @@
   "type": "commonjs",
   "dependencies": {
     "@roblox-ts/luau-ast": "^2.0.1",
+    "acorn": "^8.17.0",
+    "acorn-walk": "^8.3.5",
+    "astring": "^1.9.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "luaparse": "^0.3.1",
