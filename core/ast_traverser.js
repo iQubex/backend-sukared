@@ -1,9 +1,24 @@
 const luaparse = require('luaparse');
-const cipher = require('../utils/braille_cipher');
 const { parseLuaString } = require('./preprocessor');
+const { minifyLuau: minifyLuauSafe } = require('./luau_minifier');
+const { selectCipherAlphabet } = require('../utils/alphabet_registry');
 
 const YIELD_EVERY_NODES = 1500;
-const runtimeNames = new Set(['getfenv', 'lIIll_10O_l', 'lO_10O_lI']);
+const runtimeNames = new Set(['getfenv', 'lIIll_10O_l']);
+const plainWatermarks = new Set([
+    'Obfuscated By Sukared',
+    'Dont try its very hard',
+    'SukaRed v1.0 owns you'
+]);
+
+const GLYPH_POOLS = [
+    ['⠁', '⠂', '⠃', '⠄', '⠅', '⠆', '⠇', '⠈', '⠉', '⠊', '⠋', '⠌', '⠍', '⠎', '⠏', '⠐'],
+    ['ア', 'イ', 'ウ', 'エ', 'オ', 'カ', 'キ', 'ク', 'ケ', 'コ', 'サ', 'シ', 'ス', 'セ', 'ソ', 'タ'],
+    ['अ', 'आ', 'इ', 'ई', 'उ', 'ऊ', 'ए', 'ऐ', 'ओ', 'क', 'ख', 'ग', 'च', 'ज', 'ट', 'ड'],
+    ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '月', '火', '水', '木', '金', '土'],
+    ['ༀ', '༁', '༂', '༃', '༄', '༅', '༆', '༇', '༈', '༉', '༊', '་', '༌', '།', '༎', '༏'],
+    ['※', '⁂', '⁑', '⁜', '◈', '◇', '◆', '◌', '◎', '◉', '◍', '◐', '◑', '◒', '◓', '◔']
+];
 
 class Scope {
     constructor(parent = null) {
@@ -25,11 +40,85 @@ class Scope {
     }
 }
 
+const shuffle = (items) => {
+    const out = [...items];
+    for (let i = out.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+};
+
 const randomName = () => {
     const chars = ['l', 'I', 'O', '_', '0', '1'];
     let value = '_';
-    for (let i = 0; i < 16; i++) value += chars[Math.floor(Math.random() * chars.length)];
+    for (let i = 0; i < 18; i++) value += chars[Math.floor(Math.random() * chars.length)];
     return value;
+};
+
+const luaDecimalString = (value) => `"${[...String(value)].map(char => `\\${char.charCodeAt(0)}`).join('')}"`;
+
+const luaUtf8String = (value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+
+const createCipherSession = () => {
+    const alphabet = selectCipherAlphabet(16);
+    const key = Math.floor(Math.random() * 254) + 1;
+    return { alphabet, key };
+};
+
+const encodeWithSession = (session, value) => {
+    let encoded = '';
+    const bytes = Buffer.from(String(value), 'utf8');
+    for (let i = 0; i < bytes.length; i++) {
+        const byte = (bytes[i] + session.key + (i % 17)) % 256;
+        encoded += session.alphabet[(byte >> 4) & 15] + session.alphabet[byte & 15];
+    }
+    return encoded;
+};
+
+const createDecoderCall = (state, value) => {
+    state.hasEncryptedStrings = true;
+    return {
+        type: 'CallExpression',
+        base: { type: 'Identifier', name: 'lIIll_10O_l' },
+        arguments: [
+            { type: 'StringLiteral', value: null, raw: luaUtf8String(encodeWithSession(state.cipher, value)) },
+            { type: 'NumericLiteral', value: state.cipher.key, raw: String(state.cipher.key) }
+        ]
+    };
+};
+
+const createGetfenvLookup = (state, name) => ({
+    type: 'IndexExpression',
+    base: {
+        type: 'CallExpression',
+        base: { type: 'Identifier', name: 'getfenv' },
+        arguments: []
+    },
+    index: createDecoderCall(state, name)
+});
+
+const createDecoderRuntime = (session) => {
+    const map = `{${session.alphabet.map((glyph, index) => `[${luaUtf8String(glyph)}]=${index}`).join(',')}}`;
+    const stringLookup = luaDecimalString('string');
+    const tableLookup = luaDecimalString('table');
+    const gmatchLookup = luaDecimalString('gmatch');
+    const charLookup = luaDecimalString('char');
+    const concatLookup = luaDecimalString('concat');
+    const utf8Pattern = luaDecimalString('([%z\\1-\\127\\194-\\244][\\128-\\191]*)');
+
+    const body = [
+        `local _S=getfenv()[${stringLookup}]`,
+        `local _T=getfenv()[${tableLookup}]`,
+        `local _M=${map}`,
+        'local _O={}',
+        'local _H=nil',
+        'local _I=1',
+        `for _C in _S[${gmatchLookup}](s,${utf8Pattern})do local _V=_M[_C];if _V~=nil then if _H==nil then _H=_V else local _B=_H*16+_V;_O[_I]=_S[${charLookup}]((_B-k-((_I-1)%17))%256);_I=_I+1;_H=nil end end end`,
+        `return _T[${concatLookup}](_O)`
+    ].join(';');
+
+    return `local function lIIll_10O_l(s,k) ${body} end`;
 };
 
 const createRootScope = () => {
@@ -57,10 +146,11 @@ const replaceNode = (target, source) => {
 };
 
 const encryptStringNode = (node, state) => {
+    if (node.raw && [...plainWatermarks].some(mark => String(node.raw).includes(mark))) return;
     const value = node.value !== undefined && node.value !== null ? String(node.value) : parseLuaString(node.raw);
     if (value.length === 0) return;
-    replaceNode(node, cipher.createDecoderCall(value));
-    state.hasEncryptedStrings = true;
+    if (plainWatermarks.has(value)) return;
+    replaceNode(node, createDecoderCall(state, value));
 };
 
 const transformIdentifier = (node, scope, state) => {
@@ -70,17 +160,15 @@ const transformIdentifier = (node, scope, state) => {
         return;
     }
     if (runtimeNames.has(node.name)) return;
-    replaceNode(node, cipher.createGetfenvLookup(node.name));
-    state.hasEncryptedStrings = true;
+    replaceNode(node, createGetfenvLookup(state, node.name));
 };
 
 const transformMemberExpression = (node, state) => {
     if (!node.identifier || !node.identifier.name) return;
     node.type = 'IndexExpression';
-    node.index = cipher.createDecoderCall(node.identifier.name);
+    node.index = createDecoderCall(state, node.identifier.name);
     delete node.identifier;
     delete node.indexer;
-    state.hasEncryptedStrings = true;
 };
 
 const transformColonCall = (node, state) => {
@@ -92,9 +180,8 @@ const transformColonCall = (node, state) => {
     node.base = {
         type: 'IndexExpression',
         base: methodObject,
-        index: cipher.createDecoderCall(base.identifier.name)
+        index: createDecoderCall(state, base.identifier.name)
     };
-    state.hasEncryptedStrings = true;
     return true;
 };
 
@@ -128,6 +215,11 @@ const walkAst = async (root, state) => {
             case 'CallStatement':
                 stack.push({ node: node.expression, scope });
                 break;
+            case 'DoStatement': {
+                const child = new Scope(scope);
+                pushArray(stack, node.body, child);
+                break;
+            }
             case 'IfStatement':
                 for (let i = (node.clauses || []).length - 1; i >= 0; i--) {
                     const clause = node.clauses[i];
@@ -216,8 +308,7 @@ const walkAst = async (root, state) => {
                 stack.push({ node: node.value, scope });
                 if (node.key && node.key.name) {
                     node.type = 'TableKey';
-                    node.key = cipher.createDecoderCall(node.key.name);
-                    state.hasEncryptedStrings = true;
+                    node.key = createDecoderCall(state, node.key.name);
                 }
                 break;
             case 'TableValue':
@@ -256,7 +347,7 @@ const walkAst = async (root, state) => {
     }
 };
 
-const joinStatements = (nodes) => (nodes || []).map(astToCode).filter(Boolean).join('\n');
+const joinStatements = (nodes) => (nodes || []).map(astToCode).filter(Boolean).join(';');
 
 const astToCode = (node) => {
     if (!node) return '';
@@ -277,6 +368,8 @@ const astToCode = (node) => {
             return `${(node.variables || []).map(astToCode).join(',')}=${(node.init || []).map(astToCode).join(',')}`;
         case 'CallStatement':
             return astToCode(node.expression);
+        case 'DoStatement':
+            return `do ${joinStatements(node.body)} end`;
         case 'IfStatement': {
             let code = '';
             for (const clause of node.clauses || []) {
@@ -311,7 +404,7 @@ const astToCode = (node) => {
         case 'Identifier':
             return node.name;
         case 'StringLiteral':
-            return node.raw || cipher.luaDecimalString(String(node.value || ''));
+            return node.raw || luaUtf8String(String(node.value || ''));
         case 'NumericLiteral':
             return node.raw || String(node.value);
         case 'BooleanLiteral':
@@ -351,17 +444,27 @@ const astToCode = (node) => {
 };
 
 const minifyLuau = (code) => String(code || '')
-    .replace(/[ \t\r\f\v]+/g, ' ')
-    .replace(/ *\n+ */g, '\n')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*([=+\-*/%^#<>{}()[\],;.:])\s*/g, '$1')
+    .replace(/\b(and|or)\b/g, ' $1 ')
+    .replace(/\bnot\b/g, 'not ')
+    .replace(/\s+/g, ' ')
     .trim();
 
 const transformAst = async (code) => {
-    const state = { hasEncryptedStrings: false };
+    const state = {
+        hasEncryptedStrings: false,
+        cipher: createCipherSession()
+    };
     const ast = parse(code);
     await walkAst(ast, state);
+    let output = minifyLuauSafe(astToCode(ast));
+    if (state.hasEncryptedStrings) {
+        output = minifyLuauSafe(`${createDecoderRuntime(state.cipher)};${output}`);
+    }
     return {
-        code: minifyLuau(astToCode(ast)),
-        hasEncryptedStrings: state.hasEncryptedStrings
+        code: output,
+        hasEncryptedStrings: false
     };
 };
 

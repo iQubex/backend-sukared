@@ -5,6 +5,8 @@ const { preprocess } = require('./core/preprocessor');
 const { injectDeadCode } = require('./core/dead_code_enjector');
 const { transformAst } = require('./core/ast_traverser');
 const { attachDecoderRuntime } = require('./utils/braille_cipher');
+const { createVmBundle } = require('./vmEngine');
+const { KNOWN_GLOBALS, LUA_KEYWORDS } = require('./utils/luau_terms');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -32,7 +34,8 @@ const obfuscate = async (source, options = {}) => {
         probability: options.deadCodeProbability
     });
     const transformed = await transformAst(withDeadCode);
-    return attachDecoderRuntime(transformed.code, transformed.hasEncryptedStrings);
+    const obfuscated = attachDecoderRuntime(transformed.code, transformed.hasEncryptedStrings);
+    return options.useVm ? createVmBundle(obfuscated) : obfuscated;
 };
 
 app.post('/obfuscate', async (req, res) => {
@@ -41,7 +44,8 @@ app.post('/obfuscate', async (req, res) => {
 
     try {
         const obfuscated = await obfuscate(String(code), {
-            deadCodeProbability: req.body.deadCodeProbability
+            deadCodeProbability: req.body.deadCodeProbability,
+            useVm: req.body.useVm === true || req.body.vm === true || req.body.mode === 'vm'
         });
 
         res.json({
@@ -61,7 +65,11 @@ app.post('/obfuscate', async (req, res) => {
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
-        modules: ['preprocessor', 'dead_code_enjector', 'ast_traverser', 'braille_cipher']
+        modules: ['preprocessor', 'dead_code_enjector', 'ast_traverser', 'braille_cipher', 'alphabet_registry', 'vmEngine'],
+        luau_terms: {
+            keywords: LUA_KEYWORDS.size,
+            globals: KNOWN_GLOBALS.size
+        }
     });
 });
 
