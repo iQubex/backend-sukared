@@ -1,4 +1,4 @@
-const DIGIT_FREE_GLYPHS = ['⠁', '⠂', '⠃', '⠄', '⠅', '⠆', '⠇', '⠈'];
+const DIGIT_FREE_GLYPHS = ['!', '$', '%', '&', '*', '+', '-', '.'];
 
 const luaSafeString = (value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 

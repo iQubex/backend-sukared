@@ -8,6 +8,8 @@ const luaDecimalString = (value) => `"${[...String(value)].map(char => `\\${char
 
 const luaSafeString = (value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
+const luaRawPatternString = (value) => `"${String(value).replace(/"/g, '\\"')}"`;
+
 const rand = (prefix) => {
     const chars = ['l', 'I', 'O', '_'];
     let out = `_${prefix}`;
@@ -18,6 +20,12 @@ const rand = (prefix) => {
 const checksum = (bytes) => {
     let sum = 0;
     for (let i = 0; i < bytes.length; i++) sum = (sum + bytes[i] * (i + 7)) % 2147483647;
+    return sum;
+};
+
+const checksumMod = (bytes, mod) => {
+    let sum = 0;
+    for (let i = 0; i < bytes.length; i++) sum = (sum + bytes[i] * (i + 7)) % mod;
     return sum;
 };
 
@@ -71,16 +79,16 @@ const createLookupKeys = () => ({
     tableType: luaDecimalString('table'),
     functionType: luaDecimalString('function'),
     loadstringError: luaDecimalString('SukaRed VM requires loadstring'),
-    utf8Pattern: luaDecimalString('([%z\\1-\\127\\194-\\244][\\128-\\191]*)')
+    utf8Pattern: luaRawPatternString('([%z\\1-\\127\\194-\\244][\\128-\\191]*)')
 });
 
-const createDigitFreeVmBundle = (source) => {
+const createDigitFreeVmBundle = (source, options = {}) => {
     const key = randomKey();
     const salt = Math.floor(Math.random() * 97) + 31;
     const alphabet = selectSymbolByteAlphabet(16).join('');
     const encrypted = encryptBytes(source, key, salt);
     const payload = encodeCustom16(encrypted, alphabet);
-    const integrity = checksum(encrypted) % 65521;
+    const integrity = checksumMod(encrypted, 65521);
     const n = numberExpression;
     const k = {
         string: luaSafeString('string'),
@@ -121,8 +129,10 @@ const createDigitFreeVmBundle = (source) => {
         `local ${v.idx}=${n(1)}`,
         `local ${v.hi}=nil`,
         `local ${v.sum}=${n(0)}`,
-        `for ${v.glyph} in ${v.str}[${k.gmatch}](${v.payload},".")do ${v.val}=${v.map}[${v.glyph}];if ${v.val}~=nil then if ${v.hi}==nil then ${v.hi}=${v.val}else ${v.num}=${v.hi}*${n(16)}+${v.val};${v.pos}=${v.idx}-${n(1)};${v.sum}=(${v.sum}+${v.num}*(${v.idx}+${n(6)}))%${n(65521)};${v.stream}=(${n(key)}+((${v.pos}*${n(13)})%${n(251)})+((${v.pos}+${n(salt)})%${n(29)})+((${v.pos}*${n(salt)})%${n(17)}))%${n(256)};${v.byte}=(${v.num}-${v.stream})%${n(256)};${v.out}[${v.idx}]=${v.str}[${k.char}](${v.byte});${v.idx}=${v.idx}+${n(1)};${v.hi}=nil end end end`,
-        `if ${v.sum}~=${n(integrity)} then while true do end end`,
+        `for ${v.glyph} in ${v.str}[${k.gmatch}](${v.payload},".")do ${v.val}=${v.map}[${v.glyph}];if ${v.val}~=nil then if ${v.hi}==nil then ${v.hi}=${v.val};else ${v.num}=${v.hi}*${n(16)}+${v.val};${v.pos}=${v.idx}-${n(1)};${v.sum}=(${v.sum}+${v.num}*(${v.idx}+${n(6)}))%${n(65521)};${v.stream}=(${n(key)}+((${v.pos}*${n(13)})%${n(251)})+((${v.pos}+${n(salt)})%${n(29)})+((${v.pos}*${n(salt)})%${n(17)}))%${n(256)};${v.byte}=(${v.num}-${v.stream})%${n(256)};${v.out}[${v.idx}]=${v.str}[${k.char}](${v.byte});${v.idx}=${v.idx}+${n(1)};${v.hi}=nil end end end`,
+        options.devMode
+            ? `if ${v.sum}~=${n(integrity)} then if ${v.err} then ${v.err}(${luaSafeString('SukaRed integrity check failed')})else while true do end end end`
+            : `if ${v.sum}~=${n(integrity)} then while true do end end`,
         `local ${v.src}=${v.tab}[${k.concat}](${v.out})`,
         `local ${v.load}=${v.env}[${k.loadstring}]`,
         `if(not ${v.load})or(${v.typ} and ${v.typ}(${v.load})~=${k.functionType})then if ${v.err} then ${v.err}(${k.loadstringError})else while true do end end end`,
@@ -133,11 +143,11 @@ const createDigitFreeVmBundle = (source) => {
         `if not ${v.ok} then if ${v.err} then ${v.err}(${v.re})else while true do end end end`,
         'end)()'
     ];
-    return minifyLuau(parts.join(';'));
+    return minifyLuau(parts.join(';')).replace('(function();', '(function() ');
 };
 
 const createVmBundle = (source, options = {}) => {
-    if (options.digitFree === true) return createDigitFreeVmBundle(source);
+    if (options.digitFree === true) return createDigitFreeVmBundle(source, options);
     const key = randomKey();
     const salt = Math.floor(Math.random() * 97) + 31;
     const alphabet = selectVmAlphabet(64);
@@ -179,7 +189,9 @@ const createVmBundle = (source, options = {}) => {
         `local ${v.idx}=1`,
         `local ${v.sum}=0`,
         `for ${v.glyph} in ${v.str}[${k.gmatch}](${v.payload},${k.utf8Pattern})do ${v.val}=${v.map}[${v.glyph}];if ${v.val}~=nil then ${v.acc}=${v.acc}*64+${v.val};${v.bits}=${v.bits}+6;if ${v.bits}>=8 then ${v.bits}=${v.bits}-8;${v.n}=${v.mat}[${k.floor}](${v.acc}/(2^${v.bits}))%256;${v.acc}=${v.acc}%(2^${v.bits});${v.sum}=(${v.sum}+${v.n}*(${v.idx}+6))%2147483647;${v.b}=(${v.n}-((${key}+(((${v.idx}-1)*13)%251)+(((${v.idx}-1)+${salt})%29)+((((${v.idx}-1)*${salt})%17)))%256))%256;${v.out}[${v.idx}]=${v.str}[${k.char}](${v.b});${v.idx}=${v.idx}+1 end end end`,
-        `if ${v.sum}~=${integrity} then while true do end end`,
+        options.devMode
+            ? `if ${v.sum}~=${integrity} then if ${v.err} then ${v.err}(${luaSafeString('SukaRed integrity check failed')})else while true do end end end`
+            : `if ${v.sum}~=${integrity} then while true do end end`,
         `local ${v.src}=${v.tab}[${k.concat}](${v.out})`,
         `local ${v.load}=${v.env}[${k.loadstring}]`,
         `if(not ${v.load})or(${v.typ} and ${v.typ}(${v.load})~=${k.functionType})then if ${v.err} then ${v.err}(${k.loadstringError})else while true do end end end`,

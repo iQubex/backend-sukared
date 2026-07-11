@@ -25,7 +25,7 @@ const VM_ALPHABET_CHARS = [
     '\u2234', '\u2235', '\u22C7', '\u22CB', '\u22D4', '\u22EE', '\u29C9', '\u29CA'
 ];
 
-const SYMBOL_BYTE_ALPHABET = ['!', '$', '%', '&', '(', ')', '*', '+', ',', '-', '.', '/', ':', ';', '<', '>', '?', '@', '[', ']', '^', '_', '{', '|', '}', '~'];
+const SYMBOL_BYTE_ALPHABET = ['!', '$', '&', '(', ')', '*', '+', ',', '-', '.', '/', ':', ';', '<', '>', '?'];
 
 const selectCipherAlphabet = (size = 16) => {
     const pool = ALPHABET_POOLS[Math.floor(Math.random() * ALPHABET_POOLS.length)];

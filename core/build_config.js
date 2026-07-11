@@ -21,7 +21,7 @@ const PROFILES = {
     },
     strong: {
         deadCodeProbability: 0.22,
-        decoderFamilies: ['shift', 'reverseShift', 'bytes', 'closure'],
+        decoderFamilies: ['shift', 'bytes', 'closure'],
         inlineStringRate: 0.5,
         flattenRate: 0.75,
         vm: true,

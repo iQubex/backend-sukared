@@ -64,8 +64,10 @@ const luaDecimalString = (value) => `"${[...String(value)].map(char => `\\${char
 
 const luaUtf8String = (value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
+const luaRawPatternString = (value) => `"${String(value).replace(/"/g, '\\"')}"`;
+
 const createCipherSession = (options = {}) => {
-    const alphabet = options.digitFree ? selectSymbolByteAlphabet(16) : selectCipherAlphabet(16);
+    const alphabet = options.forceAlphabet || (options.digitFree ? selectSymbolByteAlphabet(16) : selectCipherAlphabet(16));
     const families = options.decoderFamilies && options.decoderFamilies.length ? options.decoderFamilies : ['shift', 'reverseShift', 'bytes'];
     const decoders = {
         shift: randomName(),
@@ -140,18 +142,24 @@ const createDecoderRuntime = (session) => {
     const gmatchLookup = session.digitFree ? luaUtf8String('gmatch') : luaDecimalString('gmatch');
     const charLookup = session.digitFree ? luaUtf8String('char') : luaDecimalString('char');
     const concatLookup = session.digitFree ? luaUtf8String('concat') : luaDecimalString('concat');
-    const pattern = session.digitFree ? luaUtf8String('.') : luaDecimalString('([%z\\1-\\127\\194-\\244][\\128-\\191]*)');
+    const pattern = session.digitFree ? luaUtf8String('.') : luaRawPatternString('([%z\\1-\\127\\194-\\244][\\128-\\191]*)');
+    const floorLookup = session.digitFree ? luaUtf8String('floor') : luaDecimalString('floor');
+    const mathLookup = session.digitFree ? luaUtf8String('math') : luaDecimalString('math');
+    const errorLookup = session.digitFree ? luaUtf8String('error') : luaDecimalString('error');
+    const tamperMessage = luaUtf8String('SukaRed decoder range check failed');
 
     const makeBody = (reverse) => [
         `local _S=getfenv()[${stringLookup}]`,
         `local _T=getfenv()[${tableLookup}]`,
+        `local _N=getfenv()[${mathLookup}]`,
+        `local _E=getfenv()[${errorLookup}]`,
         `local _M=${map}`,
         'local _O={}',
         'local _H=nil',
         `local _I=${n(1)}`,
         reverse
-            ? `for _P=#s,${n(1)},-${n(1)} do local _C=_S[${luaUtf8String('sub')}](s,_P,_P);local _V=_M[_C];if _V~=nil then if _H==nil then _H=_V else local _B=_H*${n(16)}+_V;_O[_I]=_S[${charLookup}]((_B-k-((_I-${n(1)})%${n(17)}))%${n(256)});_I=_I+${n(1)};_H=nil end end end`
-            : `for _C in _S[${gmatchLookup}](s,${pattern})do local _V=_M[_C];if _V~=nil then if _H==nil then _H=_V else local _B=_H*${n(16)}+_V;_O[_I]=_S[${charLookup}]((_B-k-((_I-${n(1)})%${n(17)}))%${n(256)});_I=_I+${n(1)};_H=nil end end end`,
+            ? `local _R={};local _L=${n(1)};for _C in _S[${gmatchLookup}](s,${pattern})do _R[_L]=_C;_L=_L+${n(1)} end;for _P=#_R,${n(1)},-${n(1)} do local _C=_R[_P];local _V=_M[_C];if _V~=nil then if _H==nil then _H=_V else local _B=_H*${n(16)}+_V;local _X=(_B-k-((_I-${n(1)})%${n(17)}))%${n(256)};if _X<${n(0)} or _X>${n(255)} or (_N and _N[${floorLookup}](_X)~=_X)then if _E then _E(${tamperMessage})else while true do end end end;_O[_I]=_S[${charLookup}](_X);_I=_I+${n(1)};_H=nil end end end`
+            : `for _C in _S[${gmatchLookup}](s,${pattern})do local _V=_M[_C];if _V~=nil then if _H==nil then _H=_V else local _B=_H*${n(16)}+_V;local _X=(_B-k-((_I-${n(1)})%${n(17)}))%${n(256)};if _X<${n(0)} or _X>${n(255)} or (_N and _N[${floorLookup}](_X)~=_X)then if _E then _E(${tamperMessage})else while true do end end end;_O[_I]=_S[${charLookup}](_X);_I=_I+${n(1)};_H=nil end end end`,
         `return _T[${concatLookup}](_O)`
     ].join(';');
 
@@ -527,7 +535,8 @@ const transformAst = async (code, options = {}) => {
             digitFree: options.digitFree === true,
             hideNumbers: options.hideNumbers === true,
             decoderFamilies: options.decoderFamilies,
-            inlineStringRate: options.inlineStringRate
+            inlineStringRate: options.inlineStringRate,
+            forceAlphabet: options.forceAlphabet
         })
     };
     const ast = parse(code);

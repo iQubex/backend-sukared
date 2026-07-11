@@ -45,7 +45,7 @@ const obfuscate = async (source, options = {}) => {
         flattenRate: build.flattenRate
     });
     const obfuscated = attachDecoderRuntime(transformed.code, transformed.hasEncryptedStrings);
-    return build.useVm ? createVmBundle(obfuscated, { digitFree: build.digitFree, integrity: build.integrity }) : obfuscated;
+    return build.useVm ? createVmBundle(obfuscated, { digitFree: build.digitFree, integrity: build.integrity, devMode: options.devMode === true }) : obfuscated;
 };
 
 app.post('/obfuscate', async (req, res) => {
@@ -58,7 +58,8 @@ app.post('/obfuscate', async (req, res) => {
             useVm: req.body.useVm === true || req.body.vm === true || req.body.mode === 'vm',
             digitFree: req.body.digitFree === true || req.body.mode === 'digit-free',
             profile: req.body.profile || req.body.mode,
-            version: req.body.version
+            version: req.body.version,
+            devMode: req.body.devMode === true
         });
 
         res.json({
