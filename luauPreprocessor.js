@@ -339,6 +339,34 @@ const convertCompoundAssignments = (code) => {
     });
 };
 
+const isContinuationStart = (line) => /^(\.\.|[+\-*/%^]|and\b|or\b)/.test(line.trim());
+
+const isOpenExpressionLine = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+    if (/(^|[^=<>~])=$/.test(trimmed)) return true;
+    if (/(\.\.|[+\-*/%^]|\(|\{|\[|,)$/.test(trimmed)) return true;
+    return false;
+};
+
+const normalizeMultilineContinuations = (code) => {
+    const lines = String(code || '').split('\n');
+    const out = [];
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (
+            out.length > 0
+            && trimmed
+            && (isContinuationStart(trimmed) || isOpenExpressionLine(out[out.length - 1]))
+        ) {
+            out[out.length - 1] += ` ${trimmed}`;
+        } else {
+            out.push(line);
+        }
+    }
+    return out.join('\n');
+};
+
 const findTopLevelKeyword = (code, keyword, start = 0) => {
     let paren = 0;
     let curly = 0;
@@ -484,6 +512,7 @@ function preprocessLuau(code) {
     out = stripGenerics(out);
     out = stripTypesAndCasts(out);
     out = convertCompoundAssignments(out);
+    out = normalizeMultilineContinuations(out);
     out = convertLuauIfExpressions(out);
     out = normalizeLuauOperators(out);
     return out;

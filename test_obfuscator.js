@@ -6,6 +6,36 @@ const { transformAst } = require('./core/ast_traverser');
 
 const sample = 'print("Hello SukaRed")';
 
+const functionExpressionRegression = `
+local t = {3, 1, 2}
+table.sort(t, function(a, b)
+    return a < b
+end)
+print(table.concat(t, ","))
+
+local callback = function(fn)
+    return fn()
+end
+
+local x = callback(function()
+    return 1
+end)
+print(x)
+
+local function foo(a, fn, b)
+    print(fn(a) + b)
+end
+
+foo(1, function(a)
+    return a * 2
+end, 3)
+
+local value =
+    "a"
+    .. "b"
+print(value)
+`;
+
 const JAPANESE_ALPHABET = ['ア', 'イ', 'ウ', 'エ', 'オ', 'カ', 'キ', 'ク', 'ケ', 'コ', 'サ', 'シ', 'ス', 'セ', 'ソ', 'タ'];
 
 const parseLuau = (code) => luaparse.parse(code, { comments: false, luaVersion: '5.2' });
@@ -51,6 +81,18 @@ const run = async () => {
         assert(!/[\r\n]/.test(code), `${profile}: output is not single-line`);
         parseLuau(code);
         assert.strictEqual(await runLuau(code, { chunk: profile }), expected, `${profile}: runtime output mismatch`);
+    }
+
+    const regressionExpected = await runLuau(functionExpressionRegression, { chunk: 'function-expression-original' });
+    assert.strictEqual(regressionExpected, '1,2,3\n1\n5\nab');
+    for (const profile of ['light', 'balanced', 'strong']) {
+        const code = await obfuscate(functionExpressionRegression, { profile, devMode: true });
+        parseLuau(code);
+        assert.strictEqual(
+            await runLuau(code, { chunk: `function-expression-${profile}` }),
+            regressionExpected,
+            `${profile}: function expression regression failed`
+        );
     }
 
     const digitFree = await obfuscate(sample, { profile: 'strong', digitFree: true, useVm: true, devMode: true });

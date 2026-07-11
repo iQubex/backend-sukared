@@ -175,11 +175,36 @@ const createRootScope = () => {
     return scope;
 };
 
-const parse = (code) => luaparse.parse(code, {
-    comments: false,
-    scope: false,
-    luaVersion: '5.2'
-});
+const getErrorContext = (code, err) => {
+    const match = String(err && err.message || '').match(/\[(\d+):(\d+)\]/);
+    if (!match) return '';
+    const lineNo = Number(match[1]);
+    const colNo = Number(match[2]);
+    const lines = String(code || '').split('\n');
+    const start = Math.max(1, lineNo - 2);
+    const end = Math.min(lines.length, lineNo + 2);
+    const excerpt = [];
+    for (let line = start; line <= end; line++) {
+        const text = lines[line - 1] || '';
+        excerpt.push(`${line}: ${text}`);
+        if (line === lineNo) excerpt.push(`${line}: ${' '.repeat(Math.max(0, colNo))}^`);
+    }
+    return excerpt.join(' | ');
+};
+
+const parse = (code, stage = 'parse') => {
+    try {
+        return luaparse.parse(code, {
+            comments: false,
+            scope: false,
+            luaVersion: '5.2'
+        });
+    } catch (err) {
+        err.stage = stage;
+        err.sourceContext = getErrorContext(code, err);
+        throw err;
+    }
+};
 
 const pushArray = (stack, items, scope) => {
     if (!items) return;
@@ -539,7 +564,7 @@ const transformAst = async (code, options = {}) => {
             forceAlphabet: options.forceAlphabet
         })
     };
-    const ast = parse(code);
+    const ast = parse(code, 'ast-input');
     await walkAst(ast, state);
     if (Math.random() < state.flattenRate) ast.flattened = true;
     let output = minifyLuauSafe(astToCode(ast));
@@ -555,5 +580,6 @@ const transformAst = async (code, options = {}) => {
 module.exports = {
     transformAst,
     astToCode,
-    parse
+    parse,
+    getErrorContext
 };

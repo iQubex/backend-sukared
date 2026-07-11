@@ -19,12 +19,15 @@ const getErrorContext = (code, err) => {
     const match = String(err && err.message || '').match(/\[(\d+):(\d+)\]/);
     if (!match) return '';
     const lineNo = Number(match[1]);
+    const colNo = Number(match[2]);
     const lines = String(code || '').split('\n');
     const start = Math.max(1, lineNo - 2);
     const end = Math.min(lines.length, lineNo + 2);
     const excerpt = [];
     for (let line = start; line <= end; line++) {
-        excerpt.push(`${line}: ${lines[line - 1] || ''}`);
+        const text = lines[line - 1] || '';
+        excerpt.push(`${line}: ${text}`);
+        if (line === lineNo) excerpt.push(`${line}: ${' '.repeat(Math.max(0, colNo))}^`);
     }
     return excerpt.join(' | ');
 };
@@ -45,12 +48,16 @@ const obfuscate = async (source, options = {}) => {
         flattenRate: build.flattenRate
     });
     const obfuscated = attachDecoderRuntime(transformed.code, transformed.hasEncryptedStrings);
-    return build.useVm ? createVmBundle(obfuscated, { digitFree: build.digitFree, integrity: build.integrity, devMode: options.devMode === true }) : obfuscated;
+    return build.useVm ? createVmBundle(obfuscated, {
+        digitFree: build.digitFree,
+        integrity: build.integrity,
+        devMode: options.devMode === true
+    }) : obfuscated;
 };
 
 app.post('/obfuscate', async (req, res) => {
     const code = req.body && req.body.code;
-    if (!code) return res.status(400).json({ error: 'Kod gönder kanka!' });
+    if (!code) return res.status(400).json({ error: 'Code is required.' });
 
     try {
         const obfuscated = await obfuscate(String(code), {
@@ -69,9 +76,10 @@ app.post('/obfuscate', async (req, res) => {
         });
     } catch (err) {
         const preprocessed = await preprocess(String(code)).catch(() => '');
-        const context = getErrorContext(preprocessed, err);
+        const context = err.sourceContext || getErrorContext(preprocessed, err);
+        const stage = err.stage ? ` [${err.stage}]` : '';
         res.status(500).json({
-            error: `Obfuscation sırasında bir hata oluştu: ${err.message}${context ? ` | preprocessed: ${context}` : ''}`
+            error: `Obfuscation failed${stage}: ${err.message}${context ? ` | context: ${context}` : ''}`
         });
     }
 });
@@ -89,10 +97,11 @@ app.get('/health', (req, res) => {
 });
 
 if (require.main === module) {
-    app.listen(PORT, () => console.log(`SukaRed API ${PORT} portunda ayakta!`));
+    app.listen(PORT, () => console.log(`SukaRed API listening on ${PORT}`));
 }
 
 module.exports = {
     app,
-    obfuscate
+    obfuscate,
+    getErrorContext
 };
