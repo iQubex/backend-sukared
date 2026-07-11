@@ -1,4 +1,5 @@
 const assert = require('assert');
+const fs = require('fs');
 const luaparse = require('luaparse');
 const { obfuscate } = require('./server');
 const { preprocess } = require('./core/preprocessor');
@@ -113,6 +114,13 @@ const run = async () => {
     const a = await obfuscate(sample, { profile: 'balanced' });
     const b = await obfuscate(sample, { profile: 'balanced' });
     assert.notStrictEqual(a, b, 'two builds should not be identical');
+
+    const parserSuitePath = 'C:/Users/missk/Downloads/sukared_luau_runtime_tests_parser_compatible.lua';
+    if (fs.existsSync(parserSuitePath)) {
+        const parserSuite = fs.readFileSync(parserSuitePath, 'utf8');
+        const code = await obfuscate(parserSuite, { profile: 'balanced', deadCodeProbability: 1, devMode: true });
+        parseLuau(code);
+    }
 
     console.log('SukaRed tests passed');
 };

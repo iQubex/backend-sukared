@@ -32,9 +32,76 @@ const endsWithOpenExpression = (line) => /(\bthen|\bdo|\belse|\belseif|\band|\bo
 
 const isTerminatingStatement = (line) => /^(return|break|continue)\b/.test(String(line || '').trim());
 
-const canInsertBetween = (line, nextLine) => {
+const createScanState = () => ({
+    paren: 0,
+    curly: 0,
+    square: 0,
+    longClose: null
+});
+
+const scanLine = (line, state) => {
+    const text = String(line || '');
+    for (let i = 0; i < text.length;) {
+        if (state.longClose) {
+            const closeIndex = text.indexOf(state.longClose, i);
+            if (closeIndex === -1) return state;
+            i = closeIndex + state.longClose.length;
+            state.longClose = null;
+            continue;
+        }
+
+        const char = text[i];
+
+        if (char === '"' || char === "'") {
+            const quote = char;
+            i++;
+            while (i < text.length) {
+                if (text[i] === '\\') {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] === quote) {
+                    i++;
+                    break;
+                }
+                i++;
+            }
+            continue;
+        }
+
+        if (char === '[') {
+            const long = text.slice(i).match(/^\[(=*)\[/);
+            if (long) {
+                state.longClose = `]${long[1]}]`;
+                i += long[0].length;
+                continue;
+            }
+            state.square++;
+            i++;
+            continue;
+        }
+
+        if (char === ']') {
+            state.square = Math.max(0, state.square - 1);
+            i++;
+            continue;
+        }
+
+        if (char === '(') state.paren++;
+        else if (char === ')') state.paren = Math.max(0, state.paren - 1);
+        else if (char === '{') state.curly++;
+        else if (char === '}') state.curly = Math.max(0, state.curly - 1);
+        i++;
+    }
+    return state;
+};
+
+const isExpressionClosed = (state) => state.paren === 0 && state.curly === 0 && state.square === 0 && !state.longClose;
+
+const canInsertBetween = (line, nextLine, state) => {
     const trimmed = line.trim();
     if (!trimmed) return false;
+    if (!isExpressionClosed(state)) return false;
     if (endsWithOpenExpression(trimmed)) return false;
     if (startsBlockBoundary(trimmed)) return false;
     if (startsBlockBoundary(nextLine)) return false;
@@ -97,6 +164,7 @@ const injectDeadCode = async (code, options = {}) => {
     const probability = typeof options.probability === 'number' ? options.probability : 0.12;
     const lines = String(code || '').split('\n');
     const output = [];
+    const scanState = createScanState();
     let inserted = 0;
 
     output.push(makeWatermarkBlock(options));
@@ -104,7 +172,8 @@ const injectDeadCode = async (code, options = {}) => {
 
     for (let index = 0; index < lines.length; index++) {
         output.push(lines[index]);
-        if (inserted < MAX_INSERTIONS && canInsertBetween(lines[index], lines[index + 1]) && Math.random() < probability) {
+        scanLine(lines[index], scanState);
+        if (inserted < MAX_INSERTIONS && canInsertBetween(lines[index], lines[index + 1], scanState) && Math.random() < probability) {
             output.push(inserted % 3 === 0 ? makeWatermarkBlock(options) : makeOpaqueBlock(options));
             inserted++;
         }
