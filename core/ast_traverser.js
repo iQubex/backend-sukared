@@ -67,6 +67,13 @@ const randomHelperName = (prefix = 'D') => {
 
 const choice = (items) => items[Math.floor(Math.random() * items.length)];
 
+const randomDigitFreeSeed = (length = 8) => {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$';
+    let value = 'SR';
+    for (let i = 0; i < length; i++) value += chars[Math.floor(Math.random() * chars.length)];
+    return value;
+};
+
 const luaDecimalString = (value) => `"${[...String(value)].map(char => `\\${char.charCodeAt(0)}`).join('')}"`;
 
 const luaUtf8String = (value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
@@ -93,7 +100,9 @@ const createCipherSession = (options = {}) => {
         dispatchXorKey: choice(selectCipherAlphabet(16))
     };
     const keySeedName = randomHelperName('K');
-    const keySeedValue = `SR${Math.random().toString(36).slice(2, 10)}`;
+    const keySeedValue = options.digitFree === true
+        ? randomDigitFreeSeed()
+        : `SR${Math.random().toString(36).slice(2, 10)}`;
     return {
         alphabets,
         families,
@@ -647,7 +656,7 @@ const flattenStatements = (nodes) => {
     const exitState = randomStateValue();
     const stateName = randomName();
     const saltName = randomName();
-    const saltText = Math.random().toString(36).slice(2, 9);
+    const saltText = randomDigitFreeSeed(7);
     const saltValue = saltText.length;
     const s = (value) => numberExpression(value);
     const stateExpr = (value) => `(${s(value + saltValue)}-${saltName})`;

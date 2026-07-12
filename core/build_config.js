@@ -6,7 +6,7 @@ const PROFILES = {
         decoderFamilies: ['shift'],
         inlineStringRate: 0.15,
         flattenRate: 0,
-        vm: false,
+        defaultVmMode: 'off',
         integrity: false,
         hideNumbers: false
     },
@@ -15,7 +15,7 @@ const PROFILES = {
         decoderFamilies: ['shift', 'reverseShift', 'bytes', 'xor', 'tableDriven'],
         inlineStringRate: 0.3,
         flattenRate: 0.35,
-        vm: false,
+        defaultVmMode: 'off',
         integrity: true,
         hideNumbers: true
     },
@@ -24,7 +24,7 @@ const PROFILES = {
         decoderFamilies: ['shift', 'reverseShift', 'bytes', 'closure', 'xor', 'stateful', 'tableDriven', 'runtimeGenerated'],
         inlineStringRate: 0.5,
         flattenRate: 0.75,
-        vm: true,
+        defaultVmMode: 'selected',
         integrity: true,
         hideNumbers: true
     }
@@ -42,7 +42,8 @@ const createBuildConfig = (options = {}) => {
         randomId: makeRandomId(),
         fingerprint: `SR-${options.version || '1.0'}-${makeRandomId()}`,
         digitFree: options.digitFree === true,
-        useVm: options.useVm === true || options.vm === true || profile.vm === true,
+        vmMode: options.vmMode || profile.defaultVmMode,
+        useVm: options.useVm === true || options.vm === true,
         deadCodeProbability: typeof options.deadCodeProbability === 'number' ? options.deadCodeProbability : profile.deadCodeProbability
     };
 };

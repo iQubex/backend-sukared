@@ -1,3 +1,5 @@
+const { numberExpression } = require('../utils/numeric_encoder');
+
 const MAX_INSERTIONS = 160;
 const WATERMARKS = [
     'Obfuscated By Sukared',
@@ -12,13 +14,14 @@ const DIGIT_FREE_WATERMARKS = [
 ];
 
 const randomName = () => {
-    const chars = ['l', 'I', 'O', '_', '0', '1'];
+    const chars = ['l', 'I', 'O', '_'];
     let value = '_';
     for (let i = 0; i < 16; i++) value += chars[Math.floor(Math.random() * chars.length)];
     return value;
 };
 
 const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+const num = (options, value) => options.digitFree ? numberExpression(value) : String(value);
 
 const startsBlockBoundary = (line) => /^(else|elseif|end|until)\b/.test(String(line || '').trim());
 
@@ -114,9 +117,9 @@ const makeWatermarkBlock = (options = {}) => {
     return [
         'do',
         `local ${w}="${watermark}"`,
-        `local ${acc}=#${w}+${salt}`,
-        `if ${acc}~=${expected + salt} then error("SukaRed integrity check failed") end`,
-        `if (${acc}<0) then print(${w}) end`,
+        `local ${acc}=#${w}+${num(options, salt)}`,
+        `if ${acc}~=${num(options, expected + salt)} then error("SukaRed integrity check failed") end`,
+        `if (${acc}<${num(options, 0)}) then print(${w}) end`,
         'end'
     ].join(' ');
 };
@@ -137,27 +140,28 @@ const makeOpaqueBlock = (options = {}) => {
     const mode = randomInt(0, 4);
 
     if (mode === 0) {
-        return `do local ${a}=${n} local ${b}=0 for ${i}=1,${m} do ${b}=(${b}+${i}*${a})%997 end if (${b}<0) then error("SukaRed integrity check failed") end end`;
+        return `do local ${a}=${num(options, n)} local ${b}=${num(options, 0)} for ${i}=${num(options, 1)},${num(options, m)} do ${b}=(${b}+${i}*${a})%${num(options, 997)} end if (${b}<${num(options, 0)}) then error("SukaRed integrity check failed") end end`;
     }
 
     if (mode === 1) {
-        return `do local ${a}=${n} local ${b}=(${a}*${a})-${n * n} if (${b}~=0) then local function ${randomName()}() return ${b} end;${b}=${b}+1 end end`;
+        return `do local ${a}=${num(options, n)} local ${b}=(${a}*${a})-${num(options, n * n)} if (${b}~=${num(options, 0)}) then local function ${randomName()}() return ${b} end;${b}=${b}+${num(options, 1)} end end`;
     }
 
     if (mode === 2) {
         const pool = options.digitFree ? DIGIT_FREE_WATERMARKS : WATERMARKS;
         const watermark = pool[randomInt(0, pool.length - 1)];
-        return `do local ${a}="${watermark}" if (#${a}<0) then error(${a}) end end`;
+        return `do local ${a}="${watermark}" if (#${a}<${num(options, 0)}) then error(${a}) end end`;
     }
 
     if (mode === 3) {
         const c = randomName();
         const d = randomName();
         const f = randomName();
-        return `do local ${a}={} local ${b}=${n} local ${c}=#${a}+1 ${a}[${c}]=function(${d}) return (${d}+${m})%997 end local ${f}=${a}[${c}](${b}) if ${f}<0 then error("SukaRed v1.0 owns you") end end`;
+        const message = options.digitFree ? 'SukaRed owns you' : 'SukaRed v1.0 owns you';
+        return `do local ${a}={} local ${b}=${num(options, n)} local ${c}=#${a}+${num(options, 1)} ${a}[${c}]=function(${d}) return (${d}+${num(options, m)})%${num(options, 997)} end local ${f}=${a}[${c}](${b}) if ${f}<${num(options, 0)} then error("${message}") end end`;
     }
 
-    return `do local ${a}={} local ${b}=0 repeat ${a}[${b}]=${b}*${b} ${b}=${b}+1 until ${b}>0 end`;
+    return `do local ${a}={} local ${b}=${num(options, 0)} repeat ${a}[${b}]=${b}*${b} ${b}=${b}+${num(options, 1)} until ${b}>${num(options, 0)} end`;
 };
 
 const injectDeadCode = async (code, options = {}) => {
