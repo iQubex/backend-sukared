@@ -8,6 +8,7 @@ const { attachDecoderRuntime } = require('./utils/braille_cipher');
 const { createVmBundle } = require('./vmEngine');
 const { KNOWN_GLOBALS, LUA_KEYWORDS } = require('./utils/luau_terms');
 const { createBuildConfig, PROFILES } = require('./core/build_config');
+const { analyzeObfuscatedCode } = require('./core/adversarial_analyzer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -65,6 +66,10 @@ const obfuscateDetailed = async (source, options = {}) => {
             helperCount: transformed.report.helperCount + (build.useVm ? 1 : 0),
             vmFunctionCount: build.useVm ? 1 : 0,
             dependencyGraphSize: transformed.report.dependencyGraphSize + (build.useVm ? 1 : 0),
+            directDecoderCallRatio: transformed.report.directDecoderCallRatio,
+            dynamicKeyRatio: transformed.report.dynamicKeyRatio,
+            alphabetReuseRatio: transformed.report.alphabetReuseRatio,
+            adversarial: analyzeObfuscatedCode(code),
             estimatedAnalysisCost: transformed.report.estimatedAnalysisCost + (build.useVm ? 25 : 0)
         }
     };

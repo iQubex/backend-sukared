@@ -20,12 +20,6 @@ const randomName = () => {
 
 const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
-const checksum = (value) => {
-    let sum = 0;
-    for (let i = 0; i < value.length; i++) sum = (sum + value.charCodeAt(i) * (i + 3)) % 65535;
-    return sum;
-};
-
 const startsBlockBoundary = (line) => /^(else|elseif|end|until)\b/.test(String(line || '').trim());
 
 const endsWithOpenExpression = (line) => /(\bthen|\bdo|\belse|\belseif|\band|\bor|[+\-*/,%^.]|\(|\{|\[)$/.test(line);
@@ -114,15 +108,14 @@ const makeWatermarkBlock = (options = {}) => {
     const watermark = pool[randomInt(0, pool.length - 1)];
     const w = randomName();
     const acc = randomName();
-    const i = randomName();
-    const expected = checksum(watermark);
+    const expected = watermark.length;
+    const salt = randomInt(3, 17);
 
     return [
         'do',
         `local ${w}="${watermark}"`,
-        `local ${acc}=0`,
-        `for ${i}=1,#${w} do ${acc}=(${acc}+string.byte(${w},${i})*(${i}+2))%65535 end`,
-        `if ${acc}~=${expected} then while true do end end`,
+        `local ${acc}=#${w}+${salt}`,
+        `if ${acc}~=${expected + salt} then error("SukaRed integrity check failed") end`,
         `if (${acc}<0) then print(${w}) end`,
         'end'
     ].join(' ');
@@ -144,7 +137,7 @@ const makeOpaqueBlock = (options = {}) => {
     const mode = randomInt(0, 4);
 
     if (mode === 0) {
-        return `do local ${a}=${n} local ${b}=0 for ${i}=1,${m} do ${b}=(${b}+${i}*${a})%997 end if (${b}<0) then while true do break end end end`;
+        return `do local ${a}=${n} local ${b}=0 for ${i}=1,${m} do ${b}=(${b}+${i}*${a})%997 end if (${b}<0) then error("SukaRed integrity check failed") end end`;
     }
 
     if (mode === 1) {
@@ -164,7 +157,7 @@ const makeOpaqueBlock = (options = {}) => {
         return `do local ${a}={} local ${b}=${n} local ${c}=#${a}+1 ${a}[${c}]=function(${d}) return (${d}+${m})%997 end local ${f}=${a}[${c}](${b}) if ${f}<0 then error("SukaRed v1.0 owns you") end end`;
     }
 
-    return `do local ${a}={} local ${b}=0 while ${b}<0 do ${a}[${b}]=${b}*${b} ${b}=${b}+1 end end`;
+    return `do local ${a}={} local ${b}=0 repeat ${a}[${b}]=${b}*${b} ${b}=${b}+1 until ${b}>0 end`;
 };
 
 const injectDeadCode = async (code, options = {}) => {

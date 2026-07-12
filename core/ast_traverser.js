@@ -58,6 +58,13 @@ const randomName = () => {
     return value;
 };
 
+const randomHelperName = (prefix = 'D') => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+    let value = `_SR${prefix}_`;
+    for (let i = 0; i < 14; i++) value += chars[Math.floor(Math.random() * chars.length)];
+    return value;
+};
+
 const choice = (items) => items[Math.floor(Math.random() * items.length)];
 
 const luaDecimalString = (value) => `"${[...String(value)].map(char => `\\${char.charCodeAt(0)}`).join('')}"`;
@@ -66,34 +73,60 @@ const luaUtf8String = (value) => `"${String(value).replace(/\\/g, '\\\\').replac
 
 const luaRawPatternString = (value) => `"${String(value).replace(/"/g, '\\"')}"`;
 
+const selectFamilyAlphabet = (options) => options.forceAlphabet
+    || (options.digitFree ? selectSymbolByteAlphabet(16) : selectCipherAlphabet(16));
+
 const createCipherSession = (options = {}) => {
-    const alphabet = options.forceAlphabet || (options.digitFree ? selectSymbolByteAlphabet(16) : selectCipherAlphabet(16));
     const families = options.decoderFamilies && options.decoderFamilies.length ? options.decoderFamilies : ['shift', 'reverseShift', 'bytes'];
+    const familyNames = ['shift', 'reverseShift', 'xor', 'stateful', 'bytes', 'closure', 'tableDriven', 'runtimeGenerated'];
+    const alphabets = Object.create(null);
+    for (const family of familyNames) alphabets[family] = selectFamilyAlphabet(options);
     const decoders = {
-        shift: randomName(),
-        reverseShift: randomName(),
-        xor: randomName(),
-        stateful: randomName(),
-        dispatch: randomName(),
+        shift: randomHelperName('S'),
+        reverseShift: randomHelperName('R'),
+        xor: randomHelperName('X'),
+        stateful: randomHelperName('T'),
+        closure: randomHelperName('C'),
+        runtimeGenerated: randomHelperName('G'),
+        dispatch: randomHelperName('P'),
         dispatchShiftKey: choice(selectCipherAlphabet(16)),
         dispatchXorKey: choice(selectCipherAlphabet(16))
     };
+    const keySeedName = randomHelperName('K');
+    const keySeedValue = `SR${Math.random().toString(36).slice(2, 10)}`;
     return {
-        alphabet,
+        alphabets,
         families,
+        familyQueue: shuffle(families),
+        familyIndex: 0,
         decoders,
+        keySeedName,
+        keySeedValue,
         digitFree: options.digitFree === true,
         hideNumbers: options.hideNumbers === true || options.digitFree === true,
         inlineStringRate: typeof options.inlineStringRate === 'number' ? options.inlineStringRate : 0.25
     };
 };
 
-const encodeShift = (session, value, key, reverse = false) => {
+const nextDecoderFamily = (session) => {
+    if (!session.familyQueue.length) return 'shift';
+    const family = session.familyQueue[session.familyIndex % session.familyQueue.length];
+    session.familyIndex++;
+    if (session.familyIndex % session.familyQueue.length === 0) session.familyQueue = shuffle(session.familyQueue);
+    return family;
+};
+
+const getAlphabet = (session, family) => session.alphabets[family] || session.alphabets.shift;
+
+const alphabetSignature = (alphabet) => alphabet.join('');
+
+const encodeShift = (session, family, value, key, reverse = false) => {
     let encoded = '';
+    const alphabet = getAlphabet(session, family);
     const bytes = Buffer.from(String(value), 'utf8');
     for (let i = 0; i < bytes.length; i++) {
         const byte = (bytes[i] + key + (i % 17)) % 256;
-        encoded += session.alphabet[(byte >> 4) & 15] + session.alphabet[byte & 15];
+        encoded += alphabet[(byte >> 4) & 15] + alphabet[byte & 15];
     }
     return reverse ? [...encoded].reverse().join('') : encoded;
 };
@@ -112,24 +145,26 @@ const byteXor = (a, b) => {
     return out;
 };
 
-const encodeXor = (session, value, key) => {
+const encodeXor = (session, family, value, key) => {
     let encoded = '';
+    const alphabet = getAlphabet(session, family);
     const bytes = Buffer.from(String(value), 'utf8');
     for (let i = 0; i < bytes.length; i++) {
         const mask = (key + ((i * 13) % 251)) % 256;
         const byte = byteXor(bytes[i], mask);
-        encoded += session.alphabet[(byte >> 4) & 15] + session.alphabet[byte & 15];
+        encoded += alphabet[(byte >> 4) & 15] + alphabet[byte & 15];
     }
     return encoded;
 };
 
-const encodeStateful = (session, value, key) => {
+const encodeStateful = (session, family, value, key) => {
     let encoded = '';
+    const alphabet = getAlphabet(session, family);
     let seed = key;
     const bytes = Buffer.from(String(value), 'utf8');
     for (let i = 0; i < bytes.length; i++) {
         const byte = (bytes[i] + seed) % 256;
-        encoded += session.alphabet[(byte >> 4) & 15] + session.alphabet[byte & 15];
+        encoded += alphabet[(byte >> 4) & 15] + alphabet[byte & 15];
         seed = (seed * 33 + bytes[i] + (i + 1)) % 256;
     }
     return encoded;
@@ -147,51 +182,89 @@ const createInlineBytesExpression = (state, value, key) => {
     return rawExpression(`(function() local ${s}=getfenv()[${luaUtf8String('string')}] return ${s}[${luaUtf8String('char')}](${values.join(',')}) end)()`);
 };
 
+const keyExpression = (state, key, preferDynamic = false) => {
+    const seedLength = state.cipher.keySeedValue.length;
+    if (!preferDynamic && Math.random() < 0.45) {
+        state.report.staticKeyCount++;
+        return numCode(state, key);
+    }
+    state.report.dynamicKeyCount++;
+    const base = Math.max(0, key - seedLength);
+    return `(${numCode(state, base)}+#${state.cipher.keySeedName})`;
+};
+
+const createDecoderExpression = (state, decoderName, encoded, key, mode = 'direct') => {
+    const keyCode = keyExpression(state, key, mode !== 'direct');
+    const encodedCode = luaUtf8String(encoded);
+    if (mode === 'direct') {
+        state.report.directDecoderCallCount++;
+        return {
+            type: 'CallExpression',
+            base: { type: 'Identifier', name: decoderName },
+            arguments: [
+                { type: 'StringLiteral', value: null, raw: encodedCode },
+                { type: 'RawExpression', raw: keyCode }
+            ]
+        };
+    }
+    if (mode === 'closure') {
+        state.report.indirectDecoderCallCount++;
+        return rawExpression(`(function(_F,_S,_K)return _F(_S,_K)end)(${decoderName},${encodedCode},${keyCode})`);
+    }
+    if (mode === 'nested') {
+        state.report.indirectDecoderCallCount++;
+        return rawExpression(`(function(_S)return(function(_K)return ${decoderName}(_S,_K)end)(${keyCode})end)(${encodedCode})`);
+    }
+    state.report.indirectDecoderCallCount++;
+    return rawExpression(`({${decoderName}})[${numCode(state, 1)}](${encodedCode},${keyCode})`);
+};
+
+const chooseCallMode = (state, family) => {
+    if (family === 'shift' && Math.random() < 0.15) return 'direct';
+    return choice(['closure', 'nested', 'array']);
+};
+
 const createDecoderCall = (state, value) => {
     state.hasEncryptedStrings = true;
     state.report.protectedStringCount++;
-    const family = choice(state.cipher.families);
+    const family = nextDecoderFamily(state.cipher);
     state.report.decoderFamiliesUsed.add(family);
     state.report.dependencyGraphSize += family === 'closure' || family === 'runtimeGenerated' ? 2 : 1;
     const key = Math.floor(Math.random() * 231) + 17;
-    if ((family === 'bytes' || family === 'closure') && Math.random() < state.cipher.inlineStringRate) {
+    if (family === 'bytes') {
+        state.report.indirectDecoderCallCount++;
+        state.report.dynamicKeyCount++;
+        return createInlineBytesExpression(state, value, key);
+    }
+
+    if (family === 'closure' && Math.random() < state.cipher.inlineStringRate) {
+        state.report.indirectDecoderCallCount++;
+        state.report.dynamicKeyCount++;
         return createInlineBytesExpression(state, value, key);
     }
 
     if (family === 'closure') {
-        const encoded = encodeShift(state.cipher, value, key, false);
-        return rawExpression(`(function(_F,_S,_K)return _F(_S,_K)end)(${state.cipher.decoders.shift},${luaUtf8String(encoded)},${numCode(state, key)})`);
+        const encoded = encodeShift(state.cipher, 'closure', value, key, false);
+        return createDecoderExpression(state, state.cipher.decoders.closure, encoded, key, choice(['closure', 'nested', 'array']));
     }
 
     if (family === 'runtimeGenerated') {
-        const encoded = encodeXor(state.cipher, value, key);
-        return rawExpression(`(function(_E,_D,_K)local _F=_E[${luaUtf8String(state.cipher.decoders.xor)}] return _F(_D,_K)end)({[${luaUtf8String(state.cipher.decoders.xor)}]=${state.cipher.decoders.xor}},${luaUtf8String(encoded)},${numCode(state, key)})`);
+        const encoded = encodeXor(state.cipher, 'runtimeGenerated', value, key);
+        state.report.indirectDecoderCallCount++;
+        return rawExpression(`(function(_E,_D,_K)local _F=_E[${luaUtf8String(state.cipher.decoders.runtimeGenerated)}] return _F(_D,_K)end)({[${luaUtf8String(state.cipher.decoders.runtimeGenerated)}]=${state.cipher.decoders.runtimeGenerated}},${luaUtf8String(encoded)},${keyExpression(state, key, true)})`);
     }
 
     if (family === 'xor') {
-        return {
-            type: 'CallExpression',
-            base: { type: 'Identifier', name: state.cipher.decoders.xor },
-            arguments: [
-                { type: 'StringLiteral', value: null, raw: luaUtf8String(encodeXor(state.cipher, value, key)) },
-                { type: 'RawExpression', raw: numCode(state, key) }
-            ]
-        };
+        return createDecoderExpression(state, state.cipher.decoders.xor, encodeXor(state.cipher, 'xor', value, key), key, chooseCallMode(state, family));
     }
 
     if (family === 'stateful') {
-        return {
-            type: 'CallExpression',
-            base: { type: 'Identifier', name: state.cipher.decoders.stateful },
-            arguments: [
-                { type: 'StringLiteral', value: null, raw: luaUtf8String(encodeStateful(state.cipher, value, key)) },
-                { type: 'RawExpression', raw: numCode(state, key) }
-            ]
-        };
+        return createDecoderExpression(state, state.cipher.decoders.stateful, encodeStateful(state.cipher, 'stateful', value, key), key, chooseCallMode(state, family));
     }
 
     if (family === 'tableDriven') {
         const useXor = Math.random() < 0.5;
+        state.report.indirectDecoderCallCount++;
         return {
             type: 'CallExpression',
             base: {
@@ -200,22 +273,15 @@ const createDecoderCall = (state, value) => {
                 index: { type: 'StringLiteral', value: null, raw: luaUtf8String(useXor ? state.cipher.decoders.dispatchXorKey : state.cipher.decoders.dispatchShiftKey) }
             },
             arguments: [
-                { type: 'StringLiteral', value: null, raw: luaUtf8String(useXor ? encodeXor(state.cipher, value, key) : encodeShift(state.cipher, value, key, false)) },
-                { type: 'RawExpression', raw: numCode(state, key) }
+                { type: 'StringLiteral', value: null, raw: luaUtf8String(useXor ? encodeXor(state.cipher, 'xor', value, key) : encodeShift(state.cipher, 'shift', value, key, false)) },
+                { type: 'RawExpression', raw: keyExpression(state, key, true) }
             ]
         };
     }
 
     const reverse = family === 'reverseShift';
     const decoderName = reverse ? state.cipher.decoders.reverseShift : state.cipher.decoders.shift;
-    return {
-        type: 'CallExpression',
-        base: { type: 'Identifier', name: decoderName },
-        arguments: [
-            { type: 'StringLiteral', value: null, raw: luaUtf8String(encodeShift(state.cipher, value, key, reverse)) },
-            { type: 'RawExpression', raw: numCode(state, key) }
-        ]
-    };
+    return createDecoderExpression(state, decoderName, encodeShift(state.cipher, family, value, key, reverse), key, chooseCallMode(state, family));
 };
 
 const createGetfenvLookup = (state, name) => ({
@@ -230,7 +296,19 @@ const createGetfenvLookup = (state, name) => ({
 
 const createDecoderRuntime = (session) => {
     const n = (value) => session.digitFree ? numberExpression(value) : String(value);
-    const map = `{${session.alphabet.map((glyph, index) => `[${luaUtf8String(glyph)}]=${n(index)}`).join(',')}}`;
+    const makeMap = (family, dynamic = false) => {
+        const alphabet = getAlphabet(session, family);
+        if (!dynamic) return `{${alphabet.map((glyph, index) => `[${luaUtf8String(glyph)}]=${n(index)}`).join(',')}}`;
+        const left = alphabet.slice(0, 8);
+        const right = alphabet.slice(8);
+        const a = randomName();
+        const b = randomName();
+        const m = randomName();
+        const i = randomName();
+        const partsA = `{${left.map(luaUtf8String).join(',')}}`;
+        const partsB = `{${right.map(luaUtf8String).join(',')}}`;
+        return `(function() local ${a}=${partsA};local ${b}=${partsB};local ${m}={};for ${i}=${n(1)},#${a} do ${m}[${a}[${i}]]=${i}-${n(1)} end;for ${i}=${n(1)},#${b} do ${m}[${b}[${i}]]=${i}+${n(7)} end;return ${m} end)()`;
+    };
     const stringLookup = session.digitFree ? luaUtf8String('string') : luaDecimalString('string');
     const tableLookup = session.digitFree ? luaUtf8String('table') : luaDecimalString('table');
     const gmatchLookup = session.digitFree ? luaUtf8String('gmatch') : luaDecimalString('gmatch');
@@ -242,12 +320,12 @@ const createDecoderRuntime = (session) => {
     const errorLookup = session.digitFree ? luaUtf8String('error') : luaDecimalString('error');
     const tamperMessage = luaUtf8String('SukaRed decoder range check failed');
 
-    const makeShiftBody = (reverse) => [
+    const makeShiftBody = (family, reverse) => [
         `local _S=getfenv()[${stringLookup}]`,
         `local _T=getfenv()[${tableLookup}]`,
         `local _N=getfenv()[${mathLookup}]`,
         `local _E=getfenv()[${errorLookup}]`,
-        `local _M=${map}`,
+        `local _M=${makeMap(family, family === 'reverseShift')}`,
         'local _O={}',
         'local _H=nil',
         `local _I=${n(1)}`,
@@ -257,12 +335,12 @@ const createDecoderRuntime = (session) => {
         `return _T[${concatLookup}](_O)`
     ].join(';');
 
-    const xorBody = [
+    const makeXorBody = (family) => [
         `local _S=getfenv()[${stringLookup}]`,
         `local _T=getfenv()[${tableLookup}]`,
         `local _N=getfenv()[${mathLookup}]`,
         `local _E=getfenv()[${errorLookup}]`,
-        `local _M=${map}`,
+        `local _M=${makeMap(family, true)}`,
         `local function _XOR(a,b)local r=${n(0)};local p=${n(1)};while a>${n(0)} or b>${n(0)} do local aa=a%${n(2)};local bb=b%${n(2)};if aa~=bb then r=r+p end;a=(a-aa)/${n(2)};b=(b-bb)/${n(2)};p=p*${n(2)} end;return r end`,
         'local _O={}',
         'local _H=nil',
@@ -276,7 +354,7 @@ const createDecoderRuntime = (session) => {
         `local _T=getfenv()[${tableLookup}]`,
         `local _N=getfenv()[${mathLookup}]`,
         `local _E=getfenv()[${errorLookup}]`,
-        `local _M=${map}`,
+        `local _M=${makeMap('stateful', false)}`,
         'local _O={}',
         'local _H=nil',
         `local _I=${n(1)}`,
@@ -286,11 +364,13 @@ const createDecoderRuntime = (session) => {
     ].join(';');
 
     const functionHelpers = shuffle([
-        `local function ${session.decoders.shift}(s,k) ${makeShiftBody(false)} end`,
-        `local function ${session.decoders.reverseShift}(s,k) ${makeShiftBody(true)} end`,
-        `local function ${session.decoders.xor}(s,k) ${xorBody} end`,
+        `local function ${session.decoders.shift}(s,k) ${makeShiftBody('shift', false)} end`,
+        `local function ${session.decoders.reverseShift}(s,k) ${makeShiftBody('reverseShift', true)} end`,
+        `local function ${session.decoders.xor}(s,k) ${makeXorBody('xor')} end`,
         `local function ${session.decoders.stateful}(s,k) ${statefulBody} end`
     ]);
+    functionHelpers.push(`local function ${session.decoders.closure}(s,k) ${makeShiftBody('closure', false)} end`);
+    functionHelpers.push(`local function ${session.decoders.runtimeGenerated}(s,k) ${makeXorBody('runtimeGenerated')} end`);
     functionHelpers.push(`local ${session.decoders.dispatch}={[${luaUtf8String(session.decoders.dispatchShiftKey)}]=${session.decoders.shift},[${luaUtf8String(session.decoders.dispatchXorKey)}]=${session.decoders.xor}}`);
     return functionHelpers.join(';');
 };
@@ -566,12 +646,16 @@ const flattenStatements = (nodes) => {
     const states = nodes.map(() => randomStateValue());
     const exitState = randomStateValue();
     const stateName = randomName();
+    const saltName = randomName();
+    const saltText = Math.random().toString(36).slice(2, 9);
+    const saltValue = saltText.length;
     const s = (value) => numberExpression(value);
+    const stateExpr = (value) => `(${s(value + saltValue)}-${saltName})`;
     const clauses = nodes.map((node, index) => {
         const next = index === nodes.length - 1 ? exitState : states[index + 1];
-        return `${index === 0 ? 'if' : 'elseif'} ${stateName}==${s(states[index])} then ${astToCode(node)};${stateName}=${s(next)}`;
+        return `${index === 0 ? 'if' : 'elseif'} ${stateName}==${stateExpr(states[index])} then ${astToCode(node)};${stateName}=${stateExpr(next)}`;
     });
-    return `do local ${stateName}=${s(states[0])};while true do ${clauses.join(' ')} else break end end end`;
+    return `do local ${saltName}=#${luaUtf8String(saltText)};local ${stateName}=${stateExpr(states[0])};while true do ${clauses.join(' ')} else break end end end`;
 };
 
 const astToCode = (node) => {
@@ -690,7 +774,11 @@ const transformAst = async (code, options = {}) => {
             decoderFamiliesUsed: new Set(),
             helperCount: 0,
             uniqueAstFingerprintCount: 0,
-            dependencyGraphSize: 0
+            dependencyGraphSize: 0,
+            directDecoderCallCount: 0,
+            indirectDecoderCallCount: 0,
+            staticKeyCount: 0,
+            dynamicKeyCount: 0
         },
         cipher: createCipherSession({
             digitFree: options.digitFree === true,
@@ -706,11 +794,22 @@ const transformAst = async (code, options = {}) => {
     let output = minifyLuauSafe(astToCode(ast));
     if (state.hasEncryptedStrings) {
         const runtime = createDecoderRuntime(state.cipher);
-        state.report.helperCount += 5;
-        output = minifyLuauSafe(`${runtime};${output}`);
+        state.report.helperCount += 7;
+        output = minifyLuauSafe(`do local ${state.cipher.keySeedName}=${luaUtf8String(state.cipher.keySeedValue)};${runtime};${output} end`);
     }
     const decoderFamilies = [...state.report.decoderFamiliesUsed];
     state.report.uniqueAstFingerprintCount = new Set(decoderFamilies.map((name, index) => `${name}:${index % 3}`)).size;
+    const usedAlphabetSignatures = decoderFamilies
+        .map(family => {
+            if (family === 'tableDriven') return 'dispatch:' + alphabetSignature(getAlphabet(state.cipher, 'shift')) + ':' + alphabetSignature(getAlphabet(state.cipher, 'xor'));
+            return alphabetSignature(getAlphabet(state.cipher, family));
+        });
+    const maxAlphabetReuse = usedAlphabetSignatures.reduce((max, signature) => {
+        const count = usedAlphabetSignatures.filter(item => item === signature).length;
+        return Math.max(max, count);
+    }, 0);
+    const callTotal = state.report.directDecoderCallCount + state.report.indirectDecoderCallCount;
+    const keyTotal = state.report.staticKeyCount + state.report.dynamicKeyCount;
     return {
         code: output,
         hasEncryptedStrings: false,
@@ -722,6 +821,9 @@ const transformAst = async (code, options = {}) => {
             helperCount: state.report.helperCount,
             vmFunctionCount: 0,
             dependencyGraphSize: state.report.dependencyGraphSize,
+            directDecoderCallRatio: callTotal ? Number((state.report.directDecoderCallCount / callTotal).toFixed(3)) : 0,
+            dynamicKeyRatio: keyTotal ? Number((state.report.dynamicKeyCount / keyTotal).toFixed(3)) : 0,
+            alphabetReuseRatio: usedAlphabetSignatures.length ? Number((maxAlphabetReuse / usedAlphabetSignatures.length).toFixed(3)) : 0,
             estimatedAnalysisCost: Math.round(
                 state.report.protectedStringCount * Math.max(1, decoderFamilies.length) * 1.7
                 + state.report.helperCount * 2.5

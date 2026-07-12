@@ -4,6 +4,7 @@ const luaparse = require('luaparse');
 const { obfuscate, obfuscateDetailed } = require('./server');
 const { preprocess } = require('./core/preprocessor');
 const { transformAst } = require('./core/ast_traverser');
+const { analyzeObfuscatedCode } = require('./core/adversarial_analyzer');
 
 const sample = 'print("Hello SukaRed")';
 
@@ -51,6 +52,21 @@ t:Inc()
 
 assert(t.v == 2)
 print(t.v)
+`;
+
+const adversarialSample = `
+print("alpha")
+print("beta")
+print("gamma")
+print("delta")
+print("epsilon")
+print("zeta")
+print("eta")
+print("theta")
+print("iota")
+print("kappa")
+print("lambda")
+print("mu")
 `;
 
 const JAPANESE_ALPHABET = ['ア', 'イ', 'ウ', 'エ', 'オ', 'カ', 'キ', 'ク', 'ケ', 'コ', 'サ', 'シ', 'ス', 'セ', 'ソ', 'タ'];
@@ -162,6 +178,20 @@ const run = async () => {
     assert(detailed.report.protectedStringCount > 0, 'build report did not count protected strings');
     assert(detailed.report.decoderFamilyCount > 0, 'build report did not count decoder families');
     assert(detailed.report.estimatedAnalysisCost > 0, 'build report did not include analysis cost');
+
+    const adversarialExpected = await runLuau(adversarialSample, { chunk: 'adversarial-original' });
+    const adversarialTransformed = await transformAst(await preprocess(adversarialSample), {
+        decoderFamilies: ['shift', 'reverseShift', 'xor', 'stateful', 'bytes', 'closure', 'tableDriven', 'runtimeGenerated'],
+        inlineStringRate: 0.35,
+        hideNumbers: true,
+        flattenRate: 0.75
+    });
+    parseLuau(adversarialTransformed.code);
+    assert.strictEqual(await runLuau(adversarialTransformed.code, { chunk: 'adversarial-obfuscated' }), adversarialExpected);
+    const adversarial = analyzeObfuscatedCode(adversarialTransformed.code);
+    assert(adversarial.staticRecoveredStringRatio < 0.25, `static recovery ratio too high: ${JSON.stringify(adversarial)}`);
+    assert(adversarialTransformed.report.alphabetReuseRatio < 0.25, `alphabet reuse ratio too high: ${JSON.stringify(adversarialTransformed.report)}`);
+    assert(adversarialTransformed.report.directDecoderCallRatio < 0.2, `direct decoder ratio too high: ${JSON.stringify(adversarialTransformed.report)}`);
 
     const a = await obfuscate(sample, { profile: 'balanced' });
     const b = await obfuscate(sample, { profile: 'balanced' });
