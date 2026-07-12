@@ -141,7 +141,7 @@ const makeOpaqueBlock = (options = {}) => {
     const i = randomName();
     const n = randomInt(8, 64);
     const m = randomInt(3, 11);
-    const mode = randomInt(0, 3);
+    const mode = randomInt(0, 4);
 
     if (mode === 0) {
         return `do local ${a}=${n} local ${b}=0 for ${i}=1,${m} do ${b}=(${b}+${i}*${a})%997 end if (${b}<0) then while true do break end end end`;
@@ -155,6 +155,13 @@ const makeOpaqueBlock = (options = {}) => {
         const pool = options.digitFree ? DIGIT_FREE_WATERMARKS : WATERMARKS;
         const watermark = pool[randomInt(0, pool.length - 1)];
         return `do local ${a}="${watermark}" if (#${a}<0) then error(${a}) end end`;
+    }
+
+    if (mode === 3) {
+        const c = randomName();
+        const d = randomName();
+        const f = randomName();
+        return `do local ${a}={} local ${b}=${n} local ${c}=#${a}+1 ${a}[${c}]=function(${d}) return (${d}+${m})%997 end local ${f}=${a}[${c}](${b}) if ${f}<0 then error("SukaRed v1.0 owns you") end end`;
     }
 
     return `do local ${a}={} local ${b}=0 while ${b}<0 do ${a}[${b}]=${b}*${b} ${b}=${b}+1 end end`;

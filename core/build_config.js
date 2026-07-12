@@ -12,7 +12,7 @@ const PROFILES = {
     },
     balanced: {
         deadCodeProbability: 0.12,
-        decoderFamilies: ['shift', 'reverseShift', 'bytes'],
+        decoderFamilies: ['shift', 'reverseShift', 'bytes', 'xor', 'tableDriven'],
         inlineStringRate: 0.3,
         flattenRate: 0.35,
         vm: false,
@@ -21,7 +21,7 @@ const PROFILES = {
     },
     strong: {
         deadCodeProbability: 0.22,
-        decoderFamilies: ['shift', 'bytes', 'closure'],
+        decoderFamilies: ['shift', 'reverseShift', 'bytes', 'closure', 'xor', 'stateful', 'tableDriven', 'runtimeGenerated'],
         inlineStringRate: 0.5,
         flattenRate: 0.75,
         vm: true,

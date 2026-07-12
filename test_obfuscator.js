@@ -1,7 +1,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const luaparse = require('luaparse');
-const { obfuscate } = require('./server');
+const { obfuscate, obfuscateDetailed } = require('./server');
 const { preprocess } = require('./core/preprocessor');
 const { transformAst } = require('./core/ast_traverser');
 
@@ -144,6 +144,24 @@ const run = async () => {
     });
     parseLuau(reverseUnicode.code);
     assert.strictEqual(await runLuau(reverseUnicode.code, { chunk: 'reverse-unicode' }), expected, 'Japanese reverse decoder failed');
+
+    for (const family of ['shift', 'reverseShift', 'xor', 'stateful', 'bytes', 'closure', 'tableDriven', 'runtimeGenerated']) {
+        const transformed = await transformAst(await preprocess(sample), {
+            decoderFamilies: [family],
+            inlineStringRate: family === 'bytes' ? 1 : 0
+        });
+        parseLuau(transformed.code);
+        assert.strictEqual(
+            await runLuau(transformed.code, { chunk: `decoder-family-${family}` }),
+            expected,
+            `${family} decoder family failed`
+        );
+    }
+
+    const detailed = await obfuscateDetailed(sample, { profile: 'strong', devMode: true });
+    assert(detailed.report.protectedStringCount > 0, 'build report did not count protected strings');
+    assert(detailed.report.decoderFamilyCount > 0, 'build report did not count decoder families');
+    assert(detailed.report.estimatedAnalysisCost > 0, 'build report did not include analysis cost');
 
     const a = await obfuscate(sample, { profile: 'balanced' });
     const b = await obfuscate(sample, { profile: 'balanced' });

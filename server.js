@@ -32,7 +32,7 @@ const getErrorContext = (code, err) => {
     return excerpt.join(' | ');
 };
 
-const obfuscate = async (source, options = {}) => {
+const obfuscateDetailed = async (source, options = {}) => {
     const build = createBuildConfig(options);
     const preprocessed = await preprocess(source);
     const withDeadCode = await injectDeadCode(preprocessed, {
@@ -48,11 +48,31 @@ const obfuscate = async (source, options = {}) => {
         flattenRate: build.flattenRate
     });
     const obfuscated = attachDecoderRuntime(transformed.code, transformed.hasEncryptedStrings);
-    return build.useVm ? createVmBundle(obfuscated, {
+    const code = build.useVm ? createVmBundle(obfuscated, {
         digitFree: build.digitFree,
         integrity: build.integrity,
         devMode: options.devMode === true
     }) : obfuscated;
+    return {
+        code,
+        report: {
+            profile: build.profile,
+            fingerprint: build.fingerprint,
+            protectedStringCount: transformed.report.protectedStringCount,
+            decoderFamilyCount: transformed.report.decoderFamilyCount,
+            decoderFamilies: transformed.report.decoderFamilies,
+            uniqueAstFingerprintCount: transformed.report.uniqueAstFingerprintCount + (build.useVm ? 1 : 0),
+            helperCount: transformed.report.helperCount + (build.useVm ? 1 : 0),
+            vmFunctionCount: build.useVm ? 1 : 0,
+            dependencyGraphSize: transformed.report.dependencyGraphSize + (build.useVm ? 1 : 0),
+            estimatedAnalysisCost: transformed.report.estimatedAnalysisCost + (build.useVm ? 25 : 0)
+        }
+    };
+};
+
+const obfuscate = async (source, options = {}) => {
+    const result = await obfuscateDetailed(source, options);
+    return result.code;
 };
 
 app.post('/obfuscate', async (req, res) => {
@@ -60,7 +80,7 @@ app.post('/obfuscate', async (req, res) => {
     if (!code) return res.status(400).json({ error: 'Code is required.' });
 
     try {
-        const obfuscated = await obfuscate(String(code), {
+        const result = await obfuscateDetailed(String(code), {
             deadCodeProbability: req.body.deadCodeProbability,
             useVm: req.body.useVm === true || req.body.vm === true || req.body.mode === 'vm',
             digitFree: req.body.digitFree === true || req.body.mode === 'digit-free',
@@ -72,7 +92,8 @@ app.post('/obfuscate', async (req, res) => {
         res.json({
             status: 'success',
             original_length: code.length,
-            obfuscated
+            obfuscated: result.code,
+            report: result.report
         });
     } catch (err) {
         const preprocessed = await preprocess(String(code)).catch(() => '');
@@ -103,5 +124,6 @@ if (require.main === module) {
 module.exports = {
     app,
     obfuscate,
+    obfuscateDetailed,
     getErrorContext
 };
