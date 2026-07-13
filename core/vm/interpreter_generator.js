@@ -15,7 +15,7 @@ const name = (prefix, seed) => {
 
 const createBranch = (opName, code, opcodeMap) => `if ${name('op', opName)}==${opcodeMap[opName]} then ${code}`;
 
-const generateInterpreter = ({ ir, opcodeMap, seed, layout = 'flat' }) => {
+const generateInterpreter = ({ ir, opcodeMap, seed, layout = 'flat', fieldOrder = ['op', 'a', 'b', 'c'] }) => {
     const bc = name('bc', seed);
     const k = name('k', seed);
     const r = name('r', seed);
@@ -27,13 +27,22 @@ const generateInterpreter = ({ ir, opcodeMap, seed, layout = 'flat' }) => {
     const c = name('c', seed);
     const env = name('env', seed);
     const args = name('args', seed);
-    const encoded = encodeInstructions(ir, opcodeMap, { layout });
+    const segment = name('seg', seed);
+    const offset = name('off', seed);
+    const segmentSize = 3;
+    const encoded = encodeInstructions(ir, opcodeMap, { layout, fieldOrder, segmentSize });
     const bytecode = renderBytecode(encoded, layout);
     const constants = renderConstantPool(ir.constants);
 
-    const fetch = layout === 'table'
-        ? `local ${inst}=${bc}[${pc}];local ${op}=${inst}[1];local ${a}=${inst}[2];local ${b}=${inst}[3];local ${c}=${inst}[4];${pc}=${pc}+1`
-        : `local ${op}=${bc}[${pc}];local ${a}=${bc}[${pc}+1];local ${b}=${bc}[${pc}+2];local ${c}=${bc}[${pc}+3];${pc}=${pc}+4`;
+    const positions = Object.fromEntries(fieldOrder.map((field, index) => [field, index + 1]));
+    let fetch;
+    if (layout === 'table') {
+        fetch = `local ${inst}=${bc}[${pc}];local ${op}=${inst}[${positions.op}];local ${a}=${inst}[${positions.a}];local ${b}=${inst}[${positions.b}];local ${c}=${inst}[${positions.c}];${pc}=${pc}+1`;
+    } else if (layout === 'segmented') {
+        fetch = `local ${segment}=math.floor((${pc}-1)/${segmentSize})+1;local ${offset}=((${pc}-1)%${segmentSize})*4+1;local ${inst}=${bc}[${segment}];local ${op}=${inst}[${offset}+${positions.op - 1}];local ${a}=${inst}[${offset}+${positions.a - 1}];local ${b}=${inst}[${offset}+${positions.b - 1}];local ${c}=${inst}[${offset}+${positions.c - 1}];${pc}=${pc}+1`;
+    } else {
+        fetch = `local ${op}=${bc}[${pc}+${positions.op - 1}];local ${a}=${bc}[${pc}+${positions.a - 1}];local ${b}=${bc}[${pc}+${positions.b - 1}];local ${c}=${bc}[${pc}+${positions.c - 1}];${pc}=${pc}+4`;
+    }
 
     const opVar = name('op', 'LOAD_CONST');
     const branchOrder = shuffleWithSeed(Object.keys(opcodeMap), `branch:${seed}`);
@@ -61,7 +70,9 @@ const generateInterpreter = ({ ir, opcodeMap, seed, layout = 'flat' }) => {
         source,
         bytecode: encoded,
         branchOrder,
-        layout
+        layout,
+        fieldOrder,
+        interpreterTemplate: 'conditional-register-v1'
     };
 };
 

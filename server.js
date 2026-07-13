@@ -105,6 +105,14 @@ const obfuscateDetailed = async (source, options = {}) => {
     const originalBytes = Buffer.byteLength(String(source || ''), 'utf8');
     const outputBytes = Buffer.byteLength(code, 'utf8');
     const expansionRatio = originalBytes ? Number((outputBytes / originalBytes).toFixed(2)) : 0;
+    const publicVmFunctions = vmMetrics.functions.map(fn => ({
+        name: fn.name,
+        status: fn.status,
+        instructionCount: fn.instructionCount,
+        layout: fn.layout,
+        fieldOrder: fn.fieldOrder,
+        interpreterTemplate: fn.interpreterTemplate
+    }));
     return {
         code,
         build: {
@@ -121,7 +129,11 @@ const obfuscateDetailed = async (source, options = {}) => {
             protectedStrings: transformed.report.protectedStringCount,
             selectedFunctions: vmMetrics.selectedFunctions,
             skippedFunctions: vmMetrics.skippedFunctions,
-            vmInstructionCount: vmMetrics.vmInstructionCount
+            vmInstructionCount: vmMetrics.vmInstructionCount,
+            interpreterTemplate: vmMetrics.interpreterTemplates.length
+                ? [...new Set(vmMetrics.interpreterTemplates)].join(',')
+                : null,
+            instructionLayout: vmMetrics.instructionLayouts
         },
         report: {
             profile: build.profile,
@@ -137,9 +149,17 @@ const obfuscateDetailed = async (source, options = {}) => {
             virtualizedFunctions: vmMetrics.virtualizedFunctions,
             skippedFunctions: vmMetrics.skippedFunctions,
             vmInstructionCount: vmMetrics.vmInstructionCount,
-            vmFunctions: vmMetrics.functions,
+            vmFunctions: publicVmFunctions,
             opcodeMap: vmMetrics.opcodeMap,
             branchOrders: vmMetrics.branchOrders,
+            interpreterTemplate: vmMetrics.interpreterTemplates.length
+                ? [...new Set(vmMetrics.interpreterTemplates)].join(',')
+                : null,
+            instructionLayout: vmMetrics.instructionLayouts,
+            originalBytes,
+            outputBytes,
+            expansionRatio,
+            processingTimeMs,
             legacyPayloadWrapper: useLegacyPayloadWrapper,
             vmAstObfuscationSkipped: vmOutputOwnsRuntime,
             dependencyGraphSize: transformed.report.dependencyGraphSize + (useLegacyPayloadWrapper ? 1 : 0),
@@ -198,7 +218,7 @@ app.post('/obfuscate', async (req, res) => {
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
-        modules: ['preprocessor', 'dead_code_enjector', 'ast_traverser', 'braille_cipher', 'alphabet_registry', 'vmEngine'],
+        modules: ['preprocessor', 'dead_code_enjector', 'ast_traverser', 'braille_cipher', 'alphabet_registry', 'function_vm'],
         version: PRODUCT_VERSION,
         profiles: Object.keys(PROFILES),
         luau_terms: {

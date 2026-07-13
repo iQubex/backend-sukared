@@ -6,6 +6,8 @@ const emptyVmMetrics = (mode = 'off') => ({
     vmInstructionCount: 0,
     opcodeMap: {},
     branchOrders: [],
+    interpreterTemplates: [],
+    instructionLayouts: [],
     functions: []
 });
 

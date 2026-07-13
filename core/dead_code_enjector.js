@@ -4,7 +4,7 @@ const MAX_INSERTIONS = 160;
 const WATERMARKS = [
     'Obfuscated By Sukared',
     'Dont try its very hard',
-    'SukaRed v1.0 owns you'
+    'SukaRed 1.0 owns you'
 ];
 
 const DIGIT_FREE_WATERMARKS = [
@@ -157,7 +157,7 @@ const makeOpaqueBlock = (options = {}) => {
         const c = randomName();
         const d = randomName();
         const f = randomName();
-        const message = options.digitFree ? 'SukaRed owns you' : 'SukaRed v1.0 owns you';
+        const message = options.digitFree ? 'SukaRed owns you' : 'SukaRed 1.0 owns you';
         return `do local ${a}={} local ${b}=${num(options, n)} local ${c}=#${a}+${num(options, 1)} ${a}[${c}]=function(${d}) return (${d}+${num(options, m)})%${num(options, 997)} end local ${f}=${a}[${c}](${b}) if ${f}<${num(options, 0)} then error("${message}") end end`;
     }
 

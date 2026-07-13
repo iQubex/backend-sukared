@@ -48,6 +48,7 @@ const createOpcodeMap = (seed) => {
 
 module.exports = {
     PHASE1_OPCODES,
+    makeRng,
     createOpcodeMap,
     shuffleWithSeed
 };

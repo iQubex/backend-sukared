@@ -10,7 +10,7 @@ const runtimeNames = new Set(['getfenv', DECODER_NAME]);
 const plainWatermarks = new Set([
     'Obfuscated By Sukared',
     'Dont try its very hard',
-    'SukaRed v1.0 owns you'
+    'SukaRed 1.0 owns you'
 ]);
 
 const GLYPH_POOLS = [

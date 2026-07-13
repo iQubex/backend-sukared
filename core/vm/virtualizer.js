@@ -1,6 +1,6 @@
 const { parse, astToCode } = require('../ast_traverser');
 const { compileFunctionToIr } = require('./compiler');
-const { createOpcodeMap } = require('./opcode_generator');
+const { createOpcodeMap, makeRng, shuffleWithSeed } = require('./opcode_generator');
 const { generateInterpreter } = require('./interpreter_generator');
 const { selectFunctions } = require('./function_selector');
 const { emptyVmMetrics } = require('./metrics');
@@ -50,23 +50,32 @@ const virtualizeSource = async (source, options = {}) => {
         const fn = selection.selected[i];
         try {
             const ir = compileFunctionToIr(fn, { maxNodes: selection.limits.maxNodes });
-            const layout = (options.seed || '').length % 2 === 0 ? 'flat' : 'table';
+            const functionSeed = `${options.seed || 'seed'}:${fn.identifier.name}:${i}`;
+            const rng = makeRng(`layout:${functionSeed}`);
+            const layouts = ['flat', 'table', 'segmented'];
+            const layout = layouts[Math.floor(rng() * layouts.length)];
+            const fieldOrder = shuffleWithSeed(['op', 'a', 'b', 'c'], `fields:${functionSeed}`);
             const generated = generateInterpreter({
                 ir,
                 opcodeMap,
-                seed: `${options.seed || 'seed'}:${fn.identifier.name}:${i}`,
-                layout
+                seed: functionSeed,
+                layout,
+                fieldOrder
             });
             const functionName = fn.identifier.name;
             replaceWithVmClosure(fn, generated.source);
             metrics.virtualizedFunctions += 1;
             metrics.vmInstructionCount += ir.instructions.length;
             metrics.branchOrders.push(generated.branchOrder);
+            metrics.interpreterTemplates.push(generated.interpreterTemplate);
+            metrics.instructionLayouts.push({ layout, fieldOrder });
             metrics.functions.push({
                 name: functionName,
                 status: 'virtualized',
                 instructionCount: ir.instructions.length,
                 layout,
+                fieldOrder,
+                interpreterTemplate: generated.interpreterTemplate,
                 ir: ir.instructions,
                 constants: ir.constants,
                 bytecode: generated.bytecode,
