@@ -1,4 +1,5 @@
 const luaparse = require('luaparse');
+const crypto = require('crypto');
 
 const NON_ASCII_STRING = /"([^"\\]*(?:\\.[^"\\]*)*)"/g;
 
@@ -67,6 +68,43 @@ const analyzeObfuscatedCode = (code) => {
     };
 };
 
+const normalizedAstFingerprint = (code) => {
+    const ast = tryParse(code);
+    if (!ast) return null;
+    const shape = [];
+    const visit = (node) => {
+        if (!node || typeof node !== 'object') return;
+        if (node.type) shape.push(`${node.type}:${node.operator || node.indexer || ''}`);
+        for (const [key, value] of Object.entries(node)) {
+            if (['loc', 'range', 'raw', 'value', 'name'].includes(key)) continue;
+            if (Array.isArray(value)) value.forEach(visit);
+            else if (value && typeof value === 'object') visit(value);
+        }
+    };
+    visit(ast);
+    return crypto.createHash('sha256').update(shape.join('|')).digest('hex').slice(0, 16);
+};
+
+const compareNormalizedBuilds = (outputs) => {
+    const fingerprints = outputs.map(normalizedAstFingerprint).filter(Boolean);
+    const counts = fingerprints.reduce((map, fingerprint) => {
+        map.set(fingerprint, (map.get(fingerprint) || 0) + 1);
+        return map;
+    }, new Map());
+    const largestCluster = Math.max(0, ...counts.values());
+    return {
+        buildCount: outputs.length,
+        parseableBuildCount: fingerprints.length,
+        uniqueNormalizedFingerprints: counts.size,
+        normalizedSimilarity: fingerprints.length
+            ? Number((largestCluster / fingerprints.length).toFixed(3))
+            : 1,
+        fingerprints
+    };
+};
+
 module.exports = {
-    analyzeObfuscatedCode
+    analyzeObfuscatedCode,
+    normalizedAstFingerprint,
+    compareNormalizedBuilds
 };

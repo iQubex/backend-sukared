@@ -9,6 +9,8 @@ const createContext = (params = []) => ({
     constants: [],
     constantMap: new Map(),
     instructions: [],
+    prototypes: [],
+    closureSpecs: [],
     registers: 0,
     bindings: new Map(),
     params
@@ -28,8 +30,9 @@ const addConstant = (ctx, value) => {
     return index;
 };
 
-const emit = (ctx, op, a = 0, b = 0, c = 0) => {
-    ctx.instructions.push({ op, a, b, c });
+const emit = (ctx, op, a = 0, b = 0, c = 0, d = 0) => {
+    ctx.instructions.push({ op, a, b, c, d });
+    return ctx.instructions.length;
 };
 
 module.exports = {

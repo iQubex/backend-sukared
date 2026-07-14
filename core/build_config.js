@@ -2,22 +2,24 @@ const crypto = require('crypto');
 
 const PROFILES = {
     light: {
-        deadCodeProbability: 0.05,
-        decoderFamilies: ['shift'],
-        inlineStringRate: 0.15,
+        deadCodeProbability: 0,
+        decoderFamilies: ['shift', 'bytes'],
+        inlineStringRate: 0.08,
         flattenRate: 0,
         defaultVmMode: 'off',
         integrity: false,
-        hideNumbers: false
+        hideNumbers: false,
+        safeAlphabet: true
     },
     balanced: {
-        deadCodeProbability: 0.12,
-        decoderFamilies: ['shift', 'reverseShift', 'bytes', 'xor', 'tableDriven'],
+        deadCodeProbability: 0.02,
+        decoderFamilies: ['shift', 'bytes', 'xor'],
         inlineStringRate: 0.3,
-        flattenRate: 0.35,
+        flattenRate: 0.08,
         defaultVmMode: 'off',
         integrity: true,
-        hideNumbers: true
+        hideNumbers: true,
+        safeAlphabet: true
     },
     strong: {
         deadCodeProbability: 0.22,
@@ -26,7 +28,8 @@ const PROFILES = {
         flattenRate: 0.75,
         defaultVmMode: 'selected',
         integrity: true,
-        hideNumbers: true
+        hideNumbers: true,
+        safeAlphabet: false
     }
 };
 
@@ -42,7 +45,10 @@ const createBuildConfig = (options = {}) => {
         randomId: makeRandomId(),
         fingerprint: `SR-${options.version || '1.0'}-${makeRandomId()}`,
         digitFree: options.digitFree === true,
+        safeAlphabet: options.safeAlphabet ?? profile.safeAlphabet,
         vmMode: options.vmMode || profile.defaultVmMode,
+        decoderFamilies: options.decoderFamilies || profile.decoderFamilies,
+        vmBudgets: options.vmBudgets || null,
         useVm: options.useVm === true || options.vm === true,
         deadCodeProbability: typeof options.deadCodeProbability === 'number' ? options.deadCodeProbability : profile.deadCodeProbability
     };

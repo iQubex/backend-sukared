@@ -1,12 +1,20 @@
 const encodeInstructions = (ir, opcodeMap, options = {}) => {
     const layout = options.layout || 'flat';
-    const fieldOrder = options.fieldOrder || ['op', 'a', 'b', 'c'];
-    const encoded = ir.instructions.map(inst => {
+    const fieldOrder = options.fieldOrder || ['op', 'a', 'b', 'c', 'd'];
+    const encoded = ir.instructions.map((inst, instructionIndex) => {
+        const codec = options.operandCodec || {};
+        const encodeOperand = (field, value) => {
+            const config = codec[field];
+            return config ? value * config.multiplier + config.offset : value;
+        };
         const fields = {
-            op: opcodeMap[inst.op],
-            a: inst.a || 0,
-            b: inst.b || 0,
-            c: inst.c || 0
+            op: options.opcodeResolver
+                ? options.opcodeResolver(inst.op, instructionIndex, inst)
+                : opcodeMap[inst.op],
+            a: encodeOperand('a', inst.a || 0),
+            b: encodeOperand('b', inst.b || 0),
+            c: encodeOperand('c', inst.c || 0),
+            d: encodeOperand('d', inst.d || 0)
         };
         return fieldOrder.map(field => fields[field]);
     });

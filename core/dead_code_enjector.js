@@ -27,7 +27,11 @@ const startsBlockBoundary = (line) => /^(else|elseif|end|until)\b/.test(String(l
 
 const endsWithOpenExpression = (line) => /(\bthen|\bdo|\belse|\belseif|\band|\bor|[+\-*/,%^.]|\(|\{|\[)$/.test(line);
 
-const isTerminatingStatement = (line) => /^(return|break|continue)\b/.test(String(line || '').trim());
+const isTerminatingStatement = (line) => {
+    const text = String(line || '').trim();
+    return /^(return|break|continue)\b/.test(text)
+        || /(?:^|;)\s*(return|break|continue)\b[^;]*$/.test(text);
+};
 
 const createScanState = () => ({
     paren: 0,
@@ -166,6 +170,7 @@ const makeOpaqueBlock = (options = {}) => {
 
 const injectDeadCode = async (code, options = {}) => {
     const probability = typeof options.probability === 'number' ? options.probability : 0.12;
+    if (probability <= 0) return String(code || '');
     const lines = String(code || '').split('\n');
     const output = [];
     const scanState = createScanState();
@@ -184,9 +189,6 @@ const injectDeadCode = async (code, options = {}) => {
         if (index % 750 === 0) await new Promise(resolve => setImmediate(resolve));
     }
 
-    if (!isTerminatingStatement([...lines].reverse().find(line => line.trim()) || '')) {
-        output.push(makeWatermarkBlock(options));
-    }
     return output.join('\n');
 };
 

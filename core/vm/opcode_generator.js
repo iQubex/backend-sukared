@@ -2,14 +2,42 @@ const crypto = require('crypto');
 
 const PHASE1_OPCODES = [
     'LOAD_CONST',
+    'LOAD_CONST_MOVE',
+    'LOAD_NIL',
+    'LOAD_BOOL',
     'MOVE',
+    'MULTI_MOVE',
     'GET_GLOBAL',
+    'SET_GLOBAL',
+    'GET_UPVALUE',
+    'SET_UPVALUE',
+    'CLOSURE',
+    'RESET_CELL',
+    'NEW_TABLE',
+    'GET_TABLE',
+    'SET_TABLE',
+    'SET_LIST',
     'ADD',
     'SUB',
     'MUL',
     'DIV',
+    'CONCAT',
+    'LEN',
+    'NOT',
+    'UNM',
+    'EQ',
+    'LT',
+    'LE',
+    'JUMP',
+    'JUMP_IF',
+    'FOR_PREP',
+    'FOR_LOOP',
+    'ITER_PREP',
+    'ITER_NEXT',
+    'SELF',
     'CALL',
-    'RETURN'
+    'RETURN',
+    'VARARG'
 ];
 
 const makeRng = (seed = '') => {

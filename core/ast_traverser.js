@@ -81,6 +81,7 @@ const luaUtf8String = (value) => `"${String(value).replace(/\\/g, '\\\\').replac
 const luaRawPatternString = (value) => `"${String(value).replace(/"/g, '\\"')}"`;
 
 const selectFamilyAlphabet = (options) => options.forceAlphabet
+    || (options.safeAlphabet ? selectSymbolByteAlphabet(16) : null)
     || (options.digitFree ? selectSymbolByteAlphabet(16) : selectCipherAlphabet(16));
 
 const createCipherSession = (options = {}) => {
@@ -88,6 +89,7 @@ const createCipherSession = (options = {}) => {
     const familyNames = ['shift', 'reverseShift', 'xor', 'stateful', 'bytes', 'closure', 'tableDriven', 'runtimeGenerated'];
     const alphabets = Object.create(null);
     for (const family of familyNames) alphabets[family] = selectFamilyAlphabet(options);
+    const dispatchKeys = selectCipherAlphabet(2);
     const decoders = {
         shift: randomHelperName('S'),
         reverseShift: randomHelperName('R'),
@@ -96,8 +98,8 @@ const createCipherSession = (options = {}) => {
         closure: randomHelperName('C'),
         runtimeGenerated: randomHelperName('G'),
         dispatch: randomHelperName('P'),
-        dispatchShiftKey: choice(selectCipherAlphabet(16)),
-        dispatchXorKey: choice(selectCipherAlphabet(16))
+        dispatchShiftKey: dispatchKeys[0],
+        dispatchXorKey: dispatchKeys[1]
     };
     const keySeedName = randomHelperName('K');
     const keySeedValue = options.digitFree === true
@@ -412,6 +414,8 @@ const parse = (code, stage = 'parse') => {
         return luaparse.parse(code, {
             comments: false,
             scope: false,
+            locations: true,
+            ranges: true,
             luaVersion: '5.2'
         });
     } catch (err) {
@@ -463,14 +467,19 @@ const transformColonCall = (node, state) => {
     const base = node.base;
     if (!base || base.type !== 'MemberExpression' || base.indexer !== ':' || !base.identifier) return false;
     const methodObject = base.base;
-    const selfArgument = JSON.parse(JSON.stringify(methodObject));
-    node.arguments = [selfArgument, ...(node.arguments || [])];
-    node.base = {
-        type: 'IndexExpression',
-        base: methodObject,
-        index: createDecoderCall(state, base.identifier.name)
-    };
+    const methodLookup = astToCode(createDecoderCall(state, base.identifier.name));
+    node.arguments = [methodObject, ...(node.arguments || [])];
+    node.base = rawExpression(`(function(_SR_SELF,...)return _SR_SELF[${methodLookup}](_SR_SELF,...)end)`);
     return true;
+};
+
+const transformShorthandColonCall = (node, argument, state) => {
+    const base = node.base;
+    if (!base || base.type !== 'MemberExpression' || base.indexer !== ':') return false;
+    node.type = 'CallExpression';
+    node.arguments = [argument];
+    delete node.argument;
+    return transformColonCall(node, state);
 };
 
 const walkAst = async (root, state) => {
@@ -628,16 +637,23 @@ const walkAst = async (root, state) => {
                 break;
             case 'CallExpression':
                 if (!transformColonCall(node, state)) stack.push({ node: node.base, scope });
-                else stack.push({ node: node.base.base, scope });
                 pushArray(stack, node.arguments, scope);
                 break;
             case 'TableCallExpression':
-                stack.push({ node: node.arguments, scope });
-                stack.push({ node: node.base, scope });
+                if (transformShorthandColonCall(node, node.arguments, state)) {
+                    pushArray(stack, node.arguments, scope);
+                } else {
+                    stack.push({ node: node.arguments, scope });
+                    stack.push({ node: node.base, scope });
+                }
                 break;
             case 'StringCallExpression':
-                stack.push({ node: node.argument, scope });
-                stack.push({ node: node.base, scope });
+                if (transformShorthandColonCall(node, node.argument, state)) {
+                    pushArray(stack, node.arguments, scope);
+                } else {
+                    stack.push({ node: node.argument, scope });
+                    stack.push({ node: node.base, scope });
+                }
                 break;
         }
     }
@@ -671,7 +687,11 @@ const astToCode = (node) => {
     if (!node) return '';
     const baseToCode = (base) => {
         const code = astToCode(base);
-        return base && base.type === 'FunctionDeclaration' ? `(${code})` : code;
+        const prefixTypes = new Set([
+            'Identifier', 'MemberExpression', 'IndexExpression', 'CallExpression',
+            'TableCallExpression', 'StringCallExpression', 'RawExpression'
+        ]);
+        return base && prefixTypes.has(base.type) ? code : `(${code})`;
     };
 
     switch (node.type) {
@@ -717,12 +737,18 @@ const astToCode = (node) => {
             const body = joinStatements(node.body);
             if (!node.identifier) return `function(${params.join(',')}) ${body} end`;
             if (node.isLocal) return `local function ${astToCode(node.identifier)}(${params.join(',')}) ${body} end`;
-            const fnParams = node.implicitSelf ? ['self', ...params] : params;
-            return `${astToCode(node.identifier)}=function(${fnParams.join(',')}) ${body} end`;
+            const isMethod = node.identifier.type === 'MemberExpression' && node.identifier.indexer === ':';
+            const target = isMethod
+                ? `${astToCode(node.identifier.base)}.${astToCode(node.identifier.identifier)}`
+                : astToCode(node.identifier);
+            const fnParams = node.implicitSelf || isMethod ? ['self', ...params] : params;
+            return `${target}=function(${fnParams.join(',')}) ${body} end`;
         }
         case 'Identifier':
             return node.name;
         case 'RawExpression':
+            return node.raw;
+        case 'RawStatement':
             return node.raw;
         case 'StringLiteral':
             return node.raw || luaUtf8String(String(node.value || ''));
@@ -750,9 +776,9 @@ const astToCode = (node) => {
         case 'UnaryExpression':
             return `(${node.operator === 'not' ? 'not ' : node.operator}${astToCode(node.argument)})`;
         case 'MemberExpression':
-            return `${astToCode(node.base)}${node.indexer}${astToCode(node.identifier)}`;
+            return `${baseToCode(node.base)}${node.indexer}${astToCode(node.identifier)}`;
         case 'IndexExpression':
-            return `${astToCode(node.base)}[${astToCode(node.index)}]`;
+            return `${baseToCode(node.base)}[${astToCode(node.index)}]`;
         case 'CallExpression':
             return `${baseToCode(node.base)}(${(node.arguments || []).map(astToCode).join(',')})`;
         case 'TableCallExpression':
@@ -794,6 +820,7 @@ const transformAst = async (code, options = {}) => {
             hideNumbers: options.hideNumbers === true,
             decoderFamilies: options.decoderFamilies,
             inlineStringRate: options.inlineStringRate,
+            safeAlphabet: options.safeAlphabet === true,
             forceAlphabet: options.forceAlphabet
         })
     };

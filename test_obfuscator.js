@@ -54,6 +54,23 @@ assert(t.v == 2)
 print(t.v)
 `;
 
+const shorthandMethodRegression = `
+local T = {}
+
+function T:Echo(value)
+    return value
+end
+
+function T:Read(value)
+    return value.answer
+end
+
+print(T:Echo'Head')
+print(T:Read{ answer = 42 })
+print(T:Echo[[long value]])
+print(("value %d"):format(7))
+`;
+
 const adversarialSample = `
 print("alpha")
 print("beta")
@@ -150,6 +167,22 @@ const run = async () => {
             await runLuau(code, { chunk: `method-${JSON.stringify(options)}` }),
             methodExpected,
             `method self regression failed for ${JSON.stringify(options)}`
+        );
+    }
+
+    const shorthandExpected = await runLuau(shorthandMethodRegression, { chunk: 'shorthand-method-original' });
+    assert.strictEqual(shorthandExpected, 'Head\n42\nlong value\nvalue 7');
+    const shorthandPreprocessed = await preprocess(shorthandMethodRegression);
+    assert(shorthandPreprocessed.includes(":Echo'Head'"), 'preprocessor removed a quoted shorthand method call');
+    assert(shorthandPreprocessed.includes(':Read{ answer = 42 }'), 'preprocessor removed a table shorthand method call');
+    assert(shorthandPreprocessed.includes(':Echo[[long value]]'), 'preprocessor removed a long-string shorthand method call');
+    for (const profile of ['light', 'balanced', 'strong']) {
+        const code = await obfuscate(shorthandMethodRegression, { profile, devMode: true });
+        parseLuau(code);
+        assert.strictEqual(
+            await runLuau(code, { chunk: `shorthand-method-${profile}` }),
+            shorthandExpected,
+            `${profile}: shorthand method regression failed`
         );
     }
 

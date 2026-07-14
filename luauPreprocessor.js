@@ -236,7 +236,10 @@ const readType = (code, index, stopChars = new Set([',', '=', ';', '\n', ')'])) 
 };
 
 const stripTypeAliases = (code) => {
-    return code.replace(/^\s*(export\s+)?type\s+[A-Za-z_][A-Za-z0-9_]*\s*=[^\n]*(\n|$)/gm, '\n');
+    return code.replace(
+        /^\s*(export\s+)?type\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*<[^>\n]*>)?\s*=[^\n]*(\n|$)/gm,
+        '\n'
+    );
 };
 
 const stripTypesAndCasts = (code) => {
@@ -271,7 +274,12 @@ const stripTypesAndCasts = (code) => {
             const ident = readIdentifier(code, look);
             let afterIdent = ident.end;
             while (isSpace(code[afterIdent])) afterIdent++;
-            if (ident.value && code[afterIdent] === '(') {
+            const methodArgument = code[afterIdent] === '('
+                || code[afterIdent] === '"'
+                || code[afterIdent] === "'"
+                || code[afterIdent] === '{'
+                || (code[afterIdent] === '[' && /^\[=*\[/.test(code.slice(afterIdent)));
+            if (ident.value && methodArgument) {
                 out += char;
                 i++;
                 continue;

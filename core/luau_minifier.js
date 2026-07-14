@@ -67,6 +67,11 @@ const minifyLuau = (code) => {
             continue;
         }
 
+        if (char === ';' && out[out.length - 1] === ';') {
+            i++;
+            continue;
+        }
+
         out += char;
         i++;
     }
